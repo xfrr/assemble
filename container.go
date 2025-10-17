@@ -174,11 +174,13 @@ func (c *Container) rawGet(k key) (any, error) {
 		c.mu.Unlock()
 		return v, nil
 	}
+
+	// if err is not NotFoundError, return it
 	if !isNotFound(err) {
 		return nil, err
 	}
 
-	// interface lookup via implicit bind (minimal version)
+	// try interface bindings
 	if k.sliceElem == nil && k.typ.Kind() == reflect.Interface {
 		v, err = c.resolveViaBind(k)
 		if err == nil {
@@ -233,26 +235,17 @@ func (c *Container) resolveDirect(k key) (any, error) {
 
 // resolveViaBind tries to find a concrete type for interface lookups.
 func (c *Container) resolveViaBind(k key) (any, error) {
-	for pk := range c.reg.providers {
-		if pk.sliceElem != nil {
-			continue
-		}
-		if pk.typ == nil || pk.typ.Kind() == reflect.Interface {
-			continue
-		}
-		if pk.typ.Implements(k.typ) {
-			v, err := c.rawGet(pk)
-			if err != nil {
-				return nil, err
+	for pk := range c.reg.binds {
+		if pk.name == k.name {
+			implType := c.reg.binds[pk]
+			if implType == nil {
+				return nil, fmt.Errorf("bind for %s is nil", k.typ)
 			}
-			if !reflect.TypeOf(v).Implements(k.typ) {
-				return nil, BindError{
-					From: k.typ,
-					To:   pk.typ,
-					Why:  "implementation does not satisfy interface at runtime",
-				}
+			if !implType.Implements(k.typ) {
+				return nil, fmt.Errorf("bind for %s does not implement it: %s", k.typ, implType)
 			}
-			return v, nil
+			// try to resolve the concrete type
+			return c.rawGet(key{typ: implType, name: pk.name})
 		}
 	}
 	return nil, NotFoundError{Type: k.typ, Name: k.name}
