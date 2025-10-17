@@ -1,11 +1,13 @@
 package assemble
 
+import "context"
+
 // Provider is a constructor that can resolve its dependencies via Resolve.
-type Provider[T any] func(r Resolver) (T, error)
+type Provider[T any] func(ctx context.Context, r Resolver) (T, error)
 
 // Resolver resolves dependencies.
 type Resolver interface {
-	rawGet(k key) (any, error)
+	rawGet(ctx context.Context, k key) (any, error)
 }
 
 // Registrar mutates a module (registers providers, binds, etc.).
@@ -47,14 +49,14 @@ func Append[T any](p Provider[T], opts ...RegOpt) Appender[T] {
 }
 
 // Invoke registers an startup hook. The function may resolve deps via Resolve.
-func Invoke(fn func(r Resolver) error) Registrar {
+func Invoke(fn func(ctx context.Context, r Resolver) error) Registrar {
 	return &invokeReg{fn: fn}
 }
 
 // Get resolves a dependency of type T from the Resolver r, applying optional KeyOpts.
-func Get[T any](r Resolver, opts ...KeyOpt) (T, error) {
+func Get[T any](ctx context.Context, r Resolver, opts ...KeyOpt) (T, error) {
 	k := keyFor[T](opts...)
-	v, err := r.rawGet(k)
+	v, err := r.rawGet(ctx, k)
 	if err != nil {
 		var zero T
 		return zero, err

@@ -7,8 +7,8 @@ import (
 )
 
 var (
-	ErrNotFound   = errors.New("di: binding not found")
-	ErrInvokeFail = errors.New("di: invoke failed")
+	ErrBindingNotFound = errors.New("binding not found")
+	ErrInvokeFail      = errors.New("invoke failed")
 )
 
 type BadCastError struct {
@@ -28,9 +28,9 @@ type NotFoundError struct {
 
 func (e NotFoundError) Error() string {
 	if e.Name != "" {
-		return fmt.Sprintf("%v (name=%q): %v", e.Type, e.Name, ErrNotFound)
+		return fmt.Sprintf("%v (name=%q): %v", e.Type, e.Name, ErrBindingNotFound)
 	}
-	return fmt.Sprintf("%v: %v", e.Type, ErrNotFound)
+	return fmt.Sprintf("%v: %v", e.Type, ErrBindingNotFound)
 }
 
 type BindError struct {

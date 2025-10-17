@@ -152,7 +152,7 @@ func (c *Container) Shutdown(ctx context.Context) error {
 }
 
 // rawGet is the internal, non-generic resolver used by di.Get[T].
-func (c *Container) rawGet(k key) (any, error) {
+func (c *Container) rawGet(ctx context.Context, k key) (any, error) {
 	// fast path: cached
 	c.mu.RLock()
 	if v, ok := c.cache[k]; ok {
@@ -162,7 +162,7 @@ func (c *Container) rawGet(k key) (any, error) {
 	c.mu.RUnlock()
 
 	// try direct providers
-	v, err := c.resolveDirect(k)
+	v, err := c.resolveDirect(ctx, k)
 	if err == nil {
 		c.mu.Lock()
 		// cache & record creation order the first time a key is produced
@@ -182,7 +182,7 @@ func (c *Container) rawGet(k key) (any, error) {
 
 	// try interface bindings
 	if k.sliceElem == nil && k.typ.Kind() == reflect.Interface {
-		v, err = c.resolveViaBind(k)
+		v, err = c.resolveViaBind(ctx, k)
 		if err == nil {
 			c.mu.Lock()
 			if _, exists := c.cache[k]; !exists {
@@ -199,7 +199,7 @@ func (c *Container) rawGet(k key) (any, error) {
 	return nil, NotFoundError{Type: k.typ, Name: k.name}
 }
 
-func (c *Container) resolveDirect(k key) (any, error) {
+func (c *Container) resolveDirect(ctx context.Context, k key) (any, error) {
 	fns, ok := c.reg.providers[k]
 	if !ok || len(fns) == 0 {
 		return nil, NotFoundError{Type: k.typ, Name: k.name}
@@ -210,7 +210,7 @@ func (c *Container) resolveDirect(k key) (any, error) {
 		res := &resolver{c: c}
 		slice := reflect.MakeSlice(k.typ, 0, len(fns))
 		for _, fn := range fns {
-			val, err := fn(res)
+			val, err := fn(ctx, res)
 			if err != nil {
 				return nil, err
 			}
@@ -226,7 +226,7 @@ func (c *Container) resolveDirect(k key) (any, error) {
 	// non-set: last registered wins (allow overrides in tests)
 	fn := fns[len(fns)-1]
 	res := &resolver{c: c}
-	val, err := fn(res)
+	val, err := fn(ctx, res)
 	if err != nil {
 		return nil, err
 	}
@@ -234,18 +234,25 @@ func (c *Container) resolveDirect(k key) (any, error) {
 }
 
 // resolveViaBind tries to find a concrete type for interface lookups.
-func (c *Container) resolveViaBind(k key) (any, error) {
-	for pk := range c.reg.binds {
-		if pk.name == k.name {
-			implType := c.reg.binds[pk]
-			if implType == nil {
-				return nil, fmt.Errorf("bind for %s is nil", k.typ)
+func (c *Container) resolveViaBind(ctx context.Context, k key) (any, error) {
+	// scan providers to find a concrete type implementing k.typ
+	for pk := range c.reg.providers {
+		if pk.sliceElem != nil {
+			continue // sets not candidates
+		}
+		if pk.typ == nil || pk.typ.Kind() == reflect.Interface {
+			continue
+		}
+		if pk.typ.Implements(k.typ) {
+			// resolve that concrete type and cast
+			v, err := c.rawGet(ctx, pk)
+			if err != nil {
+				return nil, err
 			}
-			if !implType.Implements(k.typ) {
-				return nil, fmt.Errorf("bind for %s does not implement it: %s", k.typ, implType)
+			if !reflect.TypeOf(v).Implements(k.typ) {
+				return nil, BindError{From: k.typ, To: pk.typ, Why: "implementation does not satisfy interface at runtime"}
 			}
-			// try to resolve the concrete type
-			return c.rawGet(key{typ: implType, name: pk.name})
+			return v, nil
 		}
 	}
 	return nil, NotFoundError{Type: k.typ, Name: k.name}

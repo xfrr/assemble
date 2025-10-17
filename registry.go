@@ -1,6 +1,7 @@
 package assemble
 
 import (
+	"context"
 	"reflect"
 )
 
@@ -38,8 +39,8 @@ func (r *provideReg[T]) register(m *module) {
 	for _, o := range r.opts {
 		o.apply(&meta)
 	}
-	m.addProvider(typeOf[T](), meta.name, func(res Resolver) (any, error) {
-		return r.p(res)
+	m.addProvider(typeOf[T](), meta.name, func(ctx context.Context, res Resolver) (any, error) {
+		return r.p(ctx, res)
 	})
 }
 
@@ -64,8 +65,8 @@ func (a Appender[T]) apply(s *setReg[T]) {
 
 func (r *setReg[T]) register(m *module) {
 	for _, p := range r.providers {
-		m.addSetProvider(typeOf[T](), "", func(res Resolver) (any, error) {
-			return p(res)
+		m.addSetProvider(typeOf[T](), "", func(ctx context.Context, res Resolver) (any, error) {
+			return p(ctx, res)
 		})
 	}
 }

@@ -1,6 +1,9 @@
 package assemble
 
-import "reflect"
+import (
+	"context"
+	"reflect"
+)
 
 // Module groups related registrations.
 type Module []Registrar
@@ -13,7 +16,7 @@ func (m Module) clone() Module {
 
 type module struct {
 	// map[key] -> list of providers (singletons). If multiple, last wins for non-set lookups.
-	providers map[key][]func(Resolver) (any, error)
+	providers map[key][]func(context.Context, Resolver) (any, error)
 	// interface bindings: iface key -> impl type (concrete)
 	binds map[key]reflect.Type
 	// starts to run on Start (Invoke/OnStart)
@@ -24,17 +27,17 @@ type module struct {
 
 func newModule() *module {
 	return &module{
-		providers: make(map[key][]func(Resolver) (any, error)),
+		providers: make(map[key][]func(context.Context, Resolver) (any, error)),
 		binds:     make(map[key]reflect.Type),
 	}
 }
 
-func (m *module) addProvider(t reflect.Type, name string, fn func(Resolver) (any, error)) {
+func (m *module) addProvider(t reflect.Type, name string, fn func(context.Context, Resolver) (any, error)) {
 	k := key{typ: t, name: name}
 	m.providers[k] = append(m.providers[k], fn)
 }
 
-func (m *module) addSetProvider(elem reflect.Type, name string, fn func(Resolver) (any, error)) {
+func (m *module) addSetProvider(elem reflect.Type, name string, fn func(context.Context, Resolver) (any, error)) {
 	slice := reflect.SliceOf(elem)
 	k := key{typ: slice, name: name, sliceElem: elem}
 	m.providers[k] = append(m.providers[k], fn)

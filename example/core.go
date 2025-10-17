@@ -2,102 +2,75 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/xfrr/assemble"
+	"github.com/xfrr/assemble/example/di"
 )
 
-type Logger interface {
-	Infof(msg string, args ...any)
-}
-
-type ZapLogger struct{}
-
-func NewZapLogger() (*ZapLogger, error) { return &ZapLogger{}, nil }
-func (z *ZapLogger) Infof(msg string, args ...any) {
-	fmt.Printf(time.Now().Format(time.RFC3339)+" | "+msg+"\n", args...)
-}
-
-type Middleware interface {
-	Name() string
-}
-
-type authMW struct{ l Logger }
-
-func (a authMW) Name() string { return "auth" }
-
-func NewAuthMW(r assemble.Resolver) (Middleware, error) {
-	l, _ := assemble.Get[Logger](r)
-	l.Infof("init auth middleware")
-	return authMW{l: l}, nil
-}
-
-type recoverMW struct{}
-
-func (r recoverMW) Name() string                           { return "recover" }
-func NewRecoverMW(_ assemble.Resolver) (Middleware, error) { return recoverMW{}, nil }
-
 type Server struct {
-	log Logger
-	mw  []Middleware
+	logger di.SimpleLogger
+	repo   di.Repository
 }
 
-func NewServer(r assemble.Resolver) (*Server, error) {
-	log, err := assemble.Get[Logger](r)
+func NewServer(ctx context.Context, resolver assemble.Resolver) (*Server, error) {
+	logger, err := assemble.Get[di.SimpleLogger](ctx, resolver)
 	if err != nil {
 		return nil, err
 	}
-	mw, err := assemble.Get[[]Middleware](r)
+	repo, err := assemble.Get[di.Repository](ctx, resolver)
 	if err != nil {
 		return nil, err
 	}
-	return &Server{log: log, mw: mw}, nil
+	return &Server{
+		logger: logger,
+		repo:   repo,
+	}, nil
 }
 
-func StartHTTP(r assemble.Resolver) error {
-	srv, err := assemble.Get[*Server](r)
+func StartServer(ctx context.Context, resolver assemble.Resolver) error {
+	srv, err := assemble.Get[*Server](ctx, resolver)
 	if err != nil {
 		return err
 	}
-	var names []string
-	for _, m := range srv.mw {
-		names = append(names, m.Name())
-	}
-	srv.log.Infof("HTTP server starting with middlewares: %v", names)
+
+	srv.logger.Infof("Starting HTTP server...")
+	// Simulate server start...
+	// time.Sleep(100 * time.Millisecond)
 	return nil
 }
 
 var Core = assemble.Module{
 	// Provide Logger using inline constructor
-	assemble.Provide(func(_ assemble.Resolver) (Logger, error) {
-		z, err := NewZapLogger()
+	assemble.Provide(func(_ context.Context, _ assemble.Resolver) (di.SimpleLogger, error) {
+		z, err := di.NewSimpleLogger()
 		if err != nil {
-			return nil, err
+			return di.SimpleLogger{}, err
 		}
-		return Logger(z), nil
+		return z, nil
 	}),
-	// Multibinding set of Middlewares
-	assemble.Set(
-		assemble.Append(NewAuthMW),
-		assemble.Append(NewRecoverMW),
-	),
+	// Provide InMemoryRepo using constructor function
+	assemble.Provide(func(_ context.Context, _ assemble.Resolver) (*di.InMemoryRepo, error) {
+		return di.NewInMemoryRepo()
+	}),
+	// Bind Repository interface to InMemoryRepo implementation
+	assemble.Bind[di.Repository](assemble.As[*di.InMemoryRepo]()),
 	// Provide Server using constructor function
 	assemble.Provide(NewServer),
 	// Generic start hook (starts HTTP server)
-	assemble.Invoke(StartHTTP),
+	assemble.Invoke(StartServer),
 	// Generic stop hook (logs shutdown)
-	assemble.OnStop(func(_ context.Context, r assemble.Resolver) error {
-		srv, err := assemble.Get[*Server](r)
+	assemble.OnStop(func(ctx context.Context, r assemble.Resolver) error {
+		srv, err := assemble.Get[*Server](ctx, r)
 		if err == nil {
-			srv.log.Infof("HTTP server stopping...")
+			srv.logger.Infof("HTTP server stopping...")
 		}
 		return nil
 	}),
 	// Stop hook with dependencies: ensure Server stops before its dependencies.
-	assemble.OnStopFor(func(_ context.Context, r assemble.Resolver, srv *Server) error {
+	assemble.OnStopFor(func(_ context.Context, _ assemble.Resolver, srv *Server) error {
 		// do graceful shutdown...
-		srv.log.Infof("Server: graceful shutdown...")
+		srv.logger.Infof("Server: graceful shutdown...")
 		// time.Sleep(100 * time.Millisecond) // simulate
 		return nil
 	}, assemble.WithStopTimeout(5*time.Second)),

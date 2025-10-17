@@ -69,7 +69,7 @@ func OnStop(fn func(ctx context.Context, r Resolver) error, opts ...HookOpt) Reg
 func OnStopFor[T any](fn func(ctx context.Context, r Resolver, t T) error, opts ...HookOpt) Registrar {
 	var h stopHook
 	h.fn = func(ctx context.Context, r Resolver) error {
-		t, err := Get[T](r)
+		t, err := Get[T](ctx, r)
 		if err != nil {
 			return err
 		}
@@ -110,7 +110,7 @@ func OnStart(fn func(ctx context.Context, r Resolver) error, opts ...HookOpt) Re
 func OnStartFor[T any](fn func(ctx context.Context, r Resolver, t T) error, opts ...HookOpt) Registrar {
 	var h startHook
 	h.fn = func(ctx context.Context, r Resolver) error {
-		t, err := Get[T](r)
+		t, err := Get[T](ctx, r)
 		if err != nil {
 			return err
 		}
@@ -128,12 +128,12 @@ func (r startReg) register(m *module) { m.addStart(startHook(r)) }
 
 // invokeReg keeps legacy Invoke() support by wrapping into OnStart with default options.
 type invokeReg struct {
-	fn func(r Resolver) error
+	fn func(ctx context.Context, r Resolver) error
 }
 
 func (r *invokeReg) register(m *module) {
 	m.addStart(startHook{
-		fn: func(_ context.Context, res Resolver) error { return r.fn(res) },
+		fn: func(ctx context.Context, res Resolver) error { return r.fn(ctx, res) },
 		// default priority 0, no timeout
 	})
 }

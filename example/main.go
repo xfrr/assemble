@@ -8,19 +8,22 @@ import (
 )
 
 func main() {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	// Build the container
-	container, err := assemble.Assemble()
+	container, err := assemble.Assemble(Core)
 	if err != nil {
 		panic(err)
 	}
 
 	// Start the container
-	if err := container.Start(context.Background()); err != nil {
-		panic(err)
+	if startErr := container.Start(context.Background()); startErr != nil {
+		panic(startErr)
 	}
 
 	// Resolve after Start using the container directly (it implements assemble.Resolver)
-	srv, err := assemble.Get[*Server](container)
+	srv, err := assemble.Get[*Server](ctx, container)
 	if err != nil {
 		panic(err)
 	}
@@ -29,9 +32,9 @@ func main() {
 	fmt.Println(container.ExportCreationOrderDOT())
 	fmt.Println("----- Creation Order PlantUML -----")
 	fmt.Println(container.ExportCreationOrderPlantUML())
-	srv.log.Infof("Server is live. Middlewares: %d", len(srv.mw))
+	srv.logger.Info("Server is running...")
 
-	if err := container.Shutdown(context.Background()); err != nil {
-		panic(err)
+	if shutdownErr := container.Shutdown(context.Background()); shutdownErr != nil {
+		panic(shutdownErr)
 	}
 }
