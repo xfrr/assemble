@@ -12,7 +12,7 @@ import (
 )
 
 //go:generate assemble -var Core -o assemble_server_gen.go
-func AssembleCore() (*assemble.Container, error) {
+func AssembleServer() (*assemble.Container, error) {
 	regs := make([]assemble.Registrar, 0, 6)
 	regs = append(regs, assemble.Provide[SimpleLogger](func(_ context.Context, _ assemble.Resolver) (SimpleLogger, error) {
 		z, err := NewSimpleLogger()

@@ -31,11 +31,11 @@ func main() {
 
 	switch {
 	case *funcName != "":
-		mod, genFn, err := extractFromFunctionTwoPass(*pkgArg, *funcName, fset)
+		mod, pkgPath, genFn, err := extractFromFunctionTwoPass(*pkgArg, *funcName, fset)
 		if err != nil {
 			log.Fatalf("parse function: %v", err)
 		}
-		writeOut(*outputPath, *varName, genFn, mod)
+		writeOut(*outputPath, *varName, genFn, pkgPath, mod)
 
 	default:
 		// -------- Variable-export mode (single-pass) ----------
@@ -55,17 +55,18 @@ func main() {
 		}
 
 		mod.SetPkgName(p.Name)
-		writeOut(*outputPath, *varName, "Assemble"+*varName, mod)
+		writeOut(*outputPath, *varName, "Assemble"+*varName, p.PkgPath, mod)
 	}
 }
 
-func writeOut(outputPath, varName, genFnName string, mod parser.Model) {
+func writeOut(outputPath, varName, genFnName, currentPkgPath string, mod parser.Model) {
 	cfg := render.Config{
-		IsVarBased:  varName != "",
-		VarName:     varName,
-		FuncName:    genFnName,
-		PkgName:     modPkgName(mod),
-		OutFilePath: outputPath,
+		IsVarBased:     varName != "",
+		VarName:        varName,
+		FuncName:       genFnName,
+		PkgName:        mod.PkgName(),
+		OutFilePath:    outputPath,
+		CurrentPkgPath: currentPkgPath,
 	}
 
 	src, emitErr := render.EmitWithFunc(mod, cfg)
@@ -82,20 +83,20 @@ func writeOut(outputPath, varName, genFnName string, mod parser.Model) {
 	fmt.Printf("assemblegen: wrote %s (%d bytes)\n", outputPath, len(src))
 }
 
-func extractFromFunctionTwoPass(pkgArg, funcName string, fset *token.FileSet) (parser.Model, string, error) {
+func extractFromFunctionTwoPass(pkgArg, funcName string, fset *token.FileSet) (parser.Model, string, string, error) {
 	cfgA := loadConfigSyntaxOnly(dirFor(pkgArg), []string{"-tags=assemble_codegen"}, fset)
 	pkgsA, err := packages.Load(cfgA, pkgArg)
 	if err != nil {
-		return parser.Model{}, "", fmt.Errorf("load (A): %w", err)
+		return parser.Model{}, "", "", fmt.Errorf("load (A): %w", err)
 	}
 	if len(pkgsA) == 0 {
-		return parser.Model{}, "", fmt.Errorf("failed loading package (A) %q", pkgArg)
+		return parser.Model{}, "", "", fmt.Errorf("failed loading package (A) %q", pkgArg)
 	}
 	pA := pkgsA[0]
 
 	ref, genFnName, refErr := parser.ExtractFunctionModuleRefLoose(pA, funcName, fset)
 	if refErr != nil {
-		return parser.Model{}, "", refErr
+		return parser.Model{}, "", "", refErr
 	}
 
 	cfgB := loadConfig(dirFor(pkgArg), nil, fset)
@@ -104,43 +105,43 @@ func extractFromFunctionTwoPass(pkgArg, funcName string, fset *token.FileSet) (p
 	case ref.IsLocalIdent:
 		pkgsB, err := packages.Load(cfgB, pkgArg)
 		if err != nil {
-			return parser.Model{}, "", fmt.Errorf("load (B local): %w", err)
+			return parser.Model{}, "", "", fmt.Errorf("load (B local): %w", err)
 		}
 		if packages.PrintErrors(pkgsB) > 0 || len(pkgsB) == 0 {
-			return parser.Model{}, "", fmt.Errorf("failed loading package (B local) %q", pkgArg)
+			return parser.Model{}, "", "", fmt.Errorf("failed loading package (B local) %q", pkgArg)
 		}
 		pB := pkgsB[0]
 		mod, err := parser.ExtractModule(pB, ref.Ident, fset)
 		if err != nil {
-			return parser.Model{}, "", fmt.Errorf("extract local module %q: %w", ref.Ident, err)
+			return parser.Model{}, "", "", fmt.Errorf("extract local module %q: %w", ref.Ident, err)
 		}
 		// merge function-file imports so renderer can include them
 		mod.Imports = append(mod.Imports, ref.Imports...)
 		mod.SetPkgName(pB.Name)
-		return mod, genFnName, nil
+		return mod, pB.PkgPath, genFnName, nil
 
 	case ref.IsSelector:
 		if ref.SelPkgPath == "" {
-			return parser.Model{}, "", fmt.Errorf("could not resolve import path for alias %q", ref.SelPkgAlias)
+			return parser.Model{}, "", "", fmt.Errorf("could not resolve import path for alias %q", ref.SelPkgAlias)
 		}
 		pkgsB, err := packages.Load(cfgB, ref.SelPkgPath)
 		if err != nil {
-			return parser.Model{}, "", fmt.Errorf("load (B foreign %q): %w", ref.SelPkgPath, err)
+			return parser.Model{}, "", "", fmt.Errorf("load (B foreign %q): %w", ref.SelPkgPath, err)
 		}
 		if packages.PrintErrors(pkgsB) > 0 || len(pkgsB) == 0 {
-			return parser.Model{}, "", fmt.Errorf("failed loading foreign package %q", ref.SelPkgPath)
+			return parser.Model{}, "", "", fmt.Errorf("failed loading foreign package %q", ref.SelPkgPath)
 		}
 		q := pkgsB[0]
 		mod, err := parser.ExtractModule(q, ref.SelIdent, fset)
 		if err != nil {
-			return parser.Model{}, "", fmt.Errorf("extract foreign module %s.%s: %w", ref.SelPkgPath, ref.SelIdent, err)
+			return parser.Model{}, "", "", fmt.Errorf("extract foreign module %s.%s: %w", ref.SelPkgPath, ref.SelIdent, err)
 		}
 		mod.Imports = append(mod.Imports, ref.Imports...)
 		mod.SetPkgName(q.Name)
-		return mod, genFnName, nil
+		return mod, q.PkgPath, genFnName, nil
 	}
 
-	return parser.Model{}, "", errors.New("unsupported module reference shape")
+	return parser.Model{}, "", "", errors.New("unsupported module reference shape")
 }
 
 func loadConfig(dir string, buildFlags []string, fset *token.FileSet) *packages.Config {
@@ -167,16 +168,6 @@ func loadConfigSyntaxOnly(dir string, buildFlags []string, fset *token.FileSet) 
 		cfg.BuildFlags = buildFlags
 	}
 	return cfg
-}
-
-// Model's package name is needed by the renderer; if your parser.Model doesn't
-// carry it yet, this helper extracts it from the imports slice (or override it).
-func modPkgName(m parser.Model) string {
-	if n := m.PkgName(); n != "" {
-		return n
-	}
-	// Fallback if not set via SetPkgName
-	return "main"
 }
 
 func dirFor(arg string) string {

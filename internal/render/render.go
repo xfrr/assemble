@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"go/format"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -52,11 +53,12 @@ const (
    ========================= */
 
 type Config struct {
-	IsVarBased  bool // whether to use exact function name (vs. var-based)
-	VarName     string
-	FuncName    string
-	OutFilePath string
-	PkgName     string
+	IsVarBased     bool // whether to use exact function name (vs. var-based)
+	VarName        string
+	FuncName       string
+	OutFilePath    string
+	PkgName        string
+	CurrentPkgPath string
 }
 
 // EmitWithFunc produces a Go file using an exact function name (e.g., "AssembleServer").
@@ -64,16 +66,18 @@ func EmitWithFunc(m parser.Model, cfg Config) (string, error) {
 	var b bytes.Buffer
 
 	writeHeader(&b, cfg.PkgName)
-	writeImports(&b, m.Imports, needsTime(m))
-	// Note: we keep the go:generate line for var-based usage; when function-based,
-	// the caller typically passes the original function name and (optionally) ignores go:generate.
+	noAlias, aliased := normalizeImports(m.Imports, needsTime(m))
+	aliasMap := buildAliasMap(noAlias, aliased)   // path -> ident (for functions/ctors)
+	nameMap := buildNameToIdent(noAlias, aliased) // pkg name -> ident (for type strings)
+
+	writeImports(&b, noAlias, aliased)
 	writeAssembleStartExact(&b, m, cfg)
 
-	writeProvides(&b, m.Provides)
-	writeSets(&b, m.Sets)
-	writeBinds(&b, m.Binds)
-	writeStarts(&b, m.Starts)
-	writeStops(&b, m.Stops)
+	writeProvides(&b, m.Provides, aliasMap, nameMap, cfg.CurrentPkgPath)
+	writeSets(&b, m.Sets, aliasMap, nameMap, cfg.CurrentPkgPath)
+	writeBinds(&b, m.Binds, nameMap)
+	writeStarts(&b, m.Starts, aliasMap, nameMap, cfg.CurrentPkgPath)
+	writeStops(&b, m.Stops, aliasMap, nameMap, cfg.CurrentPkgPath)
 
 	writeAssembleEnd(&b)
 
@@ -89,8 +93,7 @@ func writeHeader(b *bytes.Buffer, pkgName string) {
 	fmt.Fprintf(b, fileHeaderFmt, importPathAssemble, pkgName)
 }
 
-func writeImports(b *bytes.Buffer, parsed []parser.Import, includeTime bool) {
-	noAlias, aliased := normalizeImports(parsed, includeTime)
+func writeImports(b *bytes.Buffer, noAlias, aliased []parser.Import) {
 	b.WriteString("import (\n")
 	for _, imp := range noAlias {
 		fmt.Fprintf(b, "  %q\n", imp.Path)
@@ -122,29 +125,36 @@ func writeAssembleEnd(b *bytes.Buffer) {
 }
 
 /* =========================
-   Registrars / (same as before)
+   Writers for each model section
    ========================= */
 
-func writeProvides(b *bytes.Buffer, provides []parser.Provide) {
+func writeProvides(b *bytes.Buffer, provides []parser.Provide,
+	aliasMap map[string]string, nameMap map[string]string, curPkg string) {
 	for _, p := range provides {
 		opt := renderNameOpt(p.Named)
 
 		if p.IsFuncLit {
-			writeProvideFuncLit(b, p, opt)
+			// Requalify the generic type parameter if present in the literal path.
+			if p.ResType != "" {
+				p.ResType = requalifyTypeString(p.ResType, nameMap)
+			}
+			writeProvideFuncLit(b, p, opt, nameMap)
 			continue
 		}
 
-		ctor := qualified(p)
-		wrap := buildProviderWrapper(p, ctor)
-		fmt.Fprintf(b, appendProvideFmt, p.ResType, wrap, opt)
+		ctor := qualified(p, aliasMap, curPkg)
+		resType := requalifyTypeString(p.ResType, nameMap)
+		wrap := buildProviderWrapper(p, ctor, resType) // see below
+		fmt.Fprintf(b, appendProvideFmt, resType, wrap, opt)
 	}
 }
 
-func writeProvideFuncLit(b *bytes.Buffer, p parser.Provide, opt string) {
+func writeProvideFuncLit(b *bytes.Buffer, p parser.Provide, opt string, nameMap map[string]string) {
+	resType := requalifyTypeString(p.ResType, nameMap)
 	if p.TakesResolve && p.LitResultCount == 2 && p.HasError {
 		fmt.Fprint(b, "  regs = append(regs, assemble.Provide")
-		if p.ResType != "" {
-			fmt.Fprintf(b, "[%s]", p.ResType)
+		if resType != "" {
+			fmt.Fprintf(b, "[%s]", resType)
 		}
 		fmt.Fprintf(b, "(%s%s))\n", removeBlankLines(p.RawFuncLit), opt)
 		return
@@ -160,81 +170,83 @@ func writeProvideFuncLit(b *bytes.Buffer, p parser.Provide, opt string) {
 		fmt.Fprintf(
 			b,
 			"  regs = append(regs, assemble.Provide[%s](func(ctx context.Context, r assemble.Resolver)(%s, error){ prov := %s; return %s }%s))\n",
-			p.ResType, p.ResType, rawFn, call, opt,
+			resType, resType, rawFn, call, opt,
 		)
 	} else {
 		fmt.Fprintf(
 			b,
 			"  regs = append(regs, assemble.Provide[%s](func(ctx context.Context, r assemble.Resolver)(%s, error){ prov := %s; v := %s; return v, nil }%s))\n",
-			p.ResType, p.ResType, rawFn, call, opt,
+			resType, resType, rawFn, call, opt,
 		)
 	}
 }
 
-func writeSets(b *bytes.Buffer, sets []parser.Set) {
+func writeSets(b *bytes.Buffer, sets []parser.Set,
+	aliasMap map[string]string, nameMap map[string]string, curPkg string) {
 	for _, s := range sets {
 		b.WriteString(appendSetOpen)
-		if s.ElemType != "" {
-			fmt.Fprintf(b, "[%s]", s.ElemType)
+		elemType := requalifyTypeString(s.ElemType, nameMap)
+		if elemType != "" {
+			fmt.Fprintf(b, "[%s]", elemType)
 		}
 		b.WriteString("(\n")
 		for _, el := range s.Elems {
-			ctor := qualified(el)
-			elwrap := buildProviderWrapper(el, ctor)
-
-			b.WriteString("    assemble.Append")
-			if s.ElemType != "" {
-				fmt.Fprintf(b, "[%s]", s.ElemType)
-			}
-			fmt.Fprintf(b, "(%s),\n", elwrap)
+			ctor := qualified(el, aliasMap, curPkg)
+			// el.ResType might be relevant if you print it inside wrappers (we do)
+			elWrap := buildProviderWrapper(el, ctor, requalifyTypeString(el.ResType, nameMap))
+			fmt.Fprintf(b, "    assemble.Append[%s](%s),\n", elemType, elWrap)
 		}
 		b.WriteString(appendSetClose)
 	}
 }
 
-func writeBinds(b *bytes.Buffer, binds []parser.Bind) {
+func writeBinds(b *bytes.Buffer, binds []parser.Bind, nameMap map[string]string) {
 	for _, bd := range binds {
+		iface := requalifyTypeString(bd.IfaceType, nameMap)
+		impl := requalifyTypeString(bd.ImplType, nameMap)
 		opt := renderNameOpt(bd.Named)
-		fmt.Fprintf(b, appendBindFmt, bd.IfaceType, bd.ImplType, opt)
+		fmt.Fprintf(b, appendBindFmt, iface, impl, opt)
 	}
 }
 
-func writeStarts(b *bytes.Buffer, starts []parser.StartHook) {
+func writeStarts(b *bytes.Buffer, starts []parser.StartHook, aliasMap map[string]string, nameMap map[string]string, curPkg string) {
 	for _, h := range starts {
 		opts := startOpts(h)
 		if h.IsStartFor {
-			call := hookCallForStartFor(h)
+			call := hookCallForStartFor(h, aliasMap, nameMap, curPkg)
 			if h.ForType != "" {
-				fmt.Fprintf(b, appendStartFor, h.ForType, call, opts)
+				ft := requalifyTypeString(h.ForType, nameMap)
+				fmt.Fprintf(b, appendStartFor, ft, call, opts)
 			} else {
 				fmt.Fprintf(b, "  regs = append(regs, assemble.OnStartFor(%s%s))\n", call, opts)
 			}
 			continue
 		}
-		call := startHookCall(h)
+		call := startHookCall(h, aliasMap, curPkg)
 		fmt.Fprintf(b, appendStartFmt, call, opts)
 	}
 }
 
-func writeStops(b *bytes.Buffer, stops []parser.StopHook) {
+func writeStops(b *bytes.Buffer, stops []parser.StopHook, aliasMap map[string]string, nameMap map[string]string, curPkg string) {
 	for _, h := range stops {
 		opts := stopOpts(h)
 		if h.IsStopFor {
-			call := hookCallForStopFor(h)
+			call := hookCallForStopFor(h, aliasMap, nameMap, curPkg)
 			if h.ForType != "" {
-				fmt.Fprintf(b, appendStopFor, h.ForType, call, opts)
+				ft := requalifyTypeString(h.ForType, nameMap)
+				fmt.Fprintf(b, appendStopFor, ft, call, opts)
 			} else {
 				fmt.Fprintf(b, "  regs = append(regs, assemble.OnStopFor(%s%s))\n", call, opts)
 			}
 			continue
 		}
-		call := stopHookCall(h)
+		call := stopHookCall(h, aliasMap, curPkg)
 		fmt.Fprintf(b, appendStopFmt, call, opts)
 	}
 }
 
 /* =========================
-   Import handling (grouped: no-alias first, aliased last)
+   Imports Handling
    ========================= */
 
 func normalizeImports(parsed []parser.Import, includeTime bool) ([]parser.Import, []parser.Import) {
@@ -282,8 +294,28 @@ func normalizeImports(parsed []parser.Import, includeTime bool) ([]parser.Import
 }
 
 /* =========================
-   Formatting / utils (same as before)
+   Formatting / utils
    ========================= */
+
+// buildAliasMap returns the identifier to use in code for each import path.
+// For non-aliased imports, we derive the default package name from the last
+// path segment (so references use that name even though the import line has no alias).
+func buildAliasMap(noAlias, aliased []parser.Import) map[string]string {
+	m := make(map[string]string, len(noAlias)+len(aliased))
+	for _, im := range noAlias {
+		// derive default name from last path segment
+		m[im.Path] = lastSegment(im.Path)
+	}
+	for _, im := range aliased {
+		m[im.Path] = im.Alias
+	}
+	return m
+}
+
+func lastSegment(pth string) string {
+	// import paths use / separators
+	return path.Base(pth)
+}
 
 func needsTime(m parser.Model) bool {
 	uses := func(timeoutExpr string, timeoutMs int64) bool {
@@ -308,7 +340,7 @@ func needsTime(m parser.Model) bool {
 func formatOrRaw(src []byte) (string, error) {
 	formatted, err := format.Source(src)
 	if err != nil {
-		//nolint:nilerr
+		//nolint:nilerr // return unformatted source on error
 		return string(src), nil
 	}
 	return string(formatted), nil
@@ -321,46 +353,150 @@ func renderNameOpt(name string) string {
 	return fmt.Sprintf(", assemble.Name(%q)", name)
 }
 
-func qualified(p parser.Provide) string {
+// qualified returns the proper reference to a provider constructor, honoring the
+// alias that appears in the actual import block. If the ctor is from the same
+// package, it returns just the function name.
+func qualified(p parser.Provide, aliasMap map[string]string, curPkg string) string {
+	// Local or unknown path: treat as same package
+	if p.PkgPath == "" || p.PkgPath == curPkg {
+		return p.FuncName
+	}
+	if alias, ok := aliasMap[p.PkgPath]; ok && alias != "" {
+		return alias + "." + p.FuncName
+	}
+	// Fallbacks: prefer parsed alias, else derive from path
 	if p.PkgAlias != "" {
 		return p.PkgAlias + "." + p.FuncName
 	}
-	return p.FuncName
+	return lastSegment(p.PkgPath) + "." + p.FuncName
 }
 
-func buildProviderWrapper(p parser.Provide, ctor string) string {
+func buildProviderWrapper(p parser.Provide, ctor string, resType string) string {
 	switch {
 	case p.TakesResolve && p.HasError:
-		return fmt.Sprintf("func(ctx context.Context, r assemble.Resolver)(%s, error){ return %s(ctx, r) }", p.ResType, ctor)
+		return fmt.Sprintf("func(ctx context.Context, r assemble.Resolver)(%s, error){ return %s(ctx, r) }", resType, ctor)
 	case p.TakesResolve && !p.HasError:
-		return fmt.Sprintf("func(ctx context.Context, r assemble.Resolver)(%s, error){ return %s(ctx, r), nil }", p.ResType, ctor)
+		return fmt.Sprintf("func(ctx context.Context, r assemble.Resolver)(%s, error){ return %s(ctx, r), nil }", resType, ctor)
 	case !p.TakesResolve && p.HasError:
-		return fmt.Sprintf("func(ctx context.Context, r assemble.Resolver)(%s, error){ return %s() }", p.ResType, ctor)
+		return fmt.Sprintf("func(ctx context.Context, r assemble.Resolver)(%s, error){ return %s() }", resType, ctor)
 	default:
-		return fmt.Sprintf("func(ctx context.Context, r assemble.Resolver)(%s, error){ return %s(), nil }", p.ResType, ctor)
+		return fmt.Sprintf("func(ctx context.Context, r assemble.Resolver)(%s, error){ return %s(), nil }", resType, ctor)
 	}
 }
 
-func startHookCall(h parser.StartHook) string {
+// Build a map from package *name* (usually last path segment) to the
+// identifier we will use in code (alias or the name itself).
+func buildNameToIdent(noAlias, aliased []parser.Import) map[string]string {
+	m := make(map[string]string, len(noAlias)+len(aliased))
+	for _, im := range noAlias {
+		name := lastSegment(im.Path)
+		m[name] = name
+	}
+	for _, im := range aliased {
+		name := lastSegment(im.Path)
+		ident := im.Alias
+		if ident == "" {
+			ident = name
+		}
+		m[name] = ident
+	}
+	return m
+}
+
+// Re-qualify a type string produced by types.TypeString (which uses package
+// *names*) so that it uses the *identifiers* present in our import block
+// (aliases or default names). This replaces occurrences of "name." with "ident.".
+// This is a textual pass, but safe enough given Go type-string shapes.
+func requalifyTypeString(typ string, nameToIdent map[string]string) string {
+	if typ == "" || len(nameToIdent) == 0 {
+		return typ
+	}
+	// Replace longer names first to avoid partial overlaps.
+	keys := make([]string, 0, len(nameToIdent))
+	for k := range nameToIdent {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool { return len(keys[i]) > len(keys[j]) })
+
+	out := typ
+	for _, name := range keys {
+		ident := nameToIdent[name]
+		if ident == "" || ident == name {
+			continue // no change
+		}
+		// We specifically replace "name." => "ident."
+		needle := name + "."
+		repl := ident + "."
+		out = strings.ReplaceAll(out, needle, repl)
+	}
+	return out
+}
+
+/* =========================
+   Hooks Handling
+   ========================= */
+
+func startHookCall(h parser.StartHook, aliasMap map[string]string, curPkg string) string {
 	if h.IsFuncLit && h.RawFuncLit != "" {
 		return removeBlankLines(h.RawFuncLit)
 	}
-	fn := h.FuncName
-	if h.PkgAlias != "" {
-		fn = h.PkgAlias + "." + fn
-	}
+	fn := hookQualifiedName(h.PkgPath, h.FuncName, h.PkgAlias, aliasMap, curPkg)
 	return "func(ctx context.Context, r assemble.Resolver) error { return " + fn + "(ctx, r) }"
 }
 
-func stopHookCall(h parser.StopHook) string {
+func stopHookCall(h parser.StopHook, aliasMap map[string]string, curPkg string) string {
 	if h.IsFuncLit && h.RawFuncLit != "" {
 		return removeBlankLines(h.RawFuncLit)
 	}
-	fn := h.FuncName
-	if h.PkgAlias != "" {
-		fn = h.PkgAlias + "." + fn
-	}
+	fn := hookQualifiedName(h.PkgPath, h.FuncName, h.PkgAlias, aliasMap, curPkg)
 	return "func(ctx context.Context, r assemble.Resolver) error { return " + fn + "(ctx, r) }"
+}
+
+func hookCallForStartFor(h parser.StartHook, aliasMap map[string]string, nameMap map[string]string, curPkg string) string {
+	if h.IsFuncLit && h.RawFuncLit != "" {
+		return removeBlankLines(h.RawFuncLit)
+	}
+
+	fn := hookQualifiedName(h.PkgPath, h.FuncName, h.PkgAlias, aliasMap, curPkg)
+	ft := requalifyTypeString(h.ForType, nameMap)
+
+	if h.FnHasCtx && h.FnHasResolve {
+		return fmt.Sprintf("func(ctx context.Context, r assemble.Resolver, t %s) error { return %s(ctx, r, t) }", ft, fn)
+	}
+	if !h.FnHasCtx && h.FnHasResolve {
+		return fmt.Sprintf("func(ctx context.Context, r assemble.Resolver, t %s) error { return %s(r, t) }", ft, fn)
+	}
+	return fmt.Sprintf("func(ctx context.Context, r assemble.Resolver, t %s) error { return %s(t) }", ft, fn)
+}
+
+func hookCallForStopFor(h parser.StopHook, aliasMap map[string]string, nameMap map[string]string, curPkg string) string {
+	if h.IsFuncLit && h.RawFuncLit != "" {
+		return removeBlankLines(h.RawFuncLit)
+	}
+
+	fn := hookQualifiedName(h.PkgPath, h.FuncName, h.PkgAlias, aliasMap, curPkg)
+	ft := requalifyTypeString(h.ForType, nameMap)
+
+	if h.FnHasCtx && h.FnHasResolve {
+		return fmt.Sprintf("func(ctx context.Context, r assemble.Resolver, t %s) error { return %s(ctx, r, t) }", ft, fn)
+	}
+	if !h.FnHasCtx && h.FnHasResolve {
+		return fmt.Sprintf("func(ctx context.Context, r assemble.Resolver, t %s) error { return %s(r, t) }", ft, fn)
+	}
+	return fmt.Sprintf("func(ctx context.Context, r assemble.Resolver, t %s) error { return %s(t) }", ft, fn)
+}
+
+func hookQualifiedName(pkgPath, fnName, parsedAlias string, aliasMap map[string]string, curPkgPath string) string {
+	if pkgPath == "" || pkgPath == curPkgPath {
+		return fnName
+	}
+	if alias, ok := aliasMap[pkgPath]; ok && alias != "" {
+		return alias + "." + fnName
+	}
+	if parsedAlias != "" {
+		return parsedAlias + "." + fnName
+	}
+	return lastSegment(pkgPath) + "." + fnName
 }
 
 func startOpts(h parser.StartHook) string {
@@ -393,40 +529,6 @@ func stopOpts(h parser.StopHook) string {
 		return ""
 	}
 	return ", " + strings.Join(parts, ", ")
-}
-
-func hookCallForStartFor(h parser.StartHook) string {
-	if h.IsFuncLit && h.RawFuncLit != "" {
-		return removeBlankLines(h.RawFuncLit)
-	}
-	fn := h.FuncName
-	if h.PkgAlias != "" {
-		fn = h.PkgAlias + "." + fn
-	}
-	if h.FnHasCtx && h.FnHasResolve {
-		return fmt.Sprintf("func(ctx context.Context, r assemble.Resolver, t %s) error { return %s(ctx, r, t) }", h.ForType, fn)
-	}
-	if !h.FnHasCtx && h.FnHasResolve {
-		return fmt.Sprintf("func(ctx context.Context, r assemble.Resolver, t %s) error { return %s(r, t) }", h.ForType, fn)
-	}
-	return fmt.Sprintf("func(ctx context.Context, r assemble.Resolver, t %s) error { return %s(t) }", h.ForType, fn)
-}
-
-func hookCallForStopFor(h parser.StopHook) string {
-	if h.IsFuncLit && h.RawFuncLit != "" {
-		return removeBlankLines(h.RawFuncLit)
-	}
-	fn := h.FuncName
-	if h.PkgAlias != "" {
-		fn = h.PkgAlias + "." + fn
-	}
-	if h.FnHasCtx && h.FnHasResolve {
-		return fmt.Sprintf("func(ctx context.Context, r assemble.Resolver, t %s) error { return %s(ctx, r, t) }", h.ForType, fn)
-	}
-	if !h.FnHasCtx && h.FnHasResolve {
-		return fmt.Sprintf("func(ctx context.Context, r assemble.Resolver, t %s) error { return %s(r, t) }", h.ForType, fn)
-	}
-	return fmt.Sprintf("func(ctx context.Context, r assemble.Resolver, t %s) error { return %s(t) }", h.ForType, fn)
 }
 
 func removeBlankLines(s string) string {
