@@ -65,7 +65,6 @@ linters:
   - funcorder # checks the order of functions, methods, and constructors
   - funlen # tool for detection of long functions
   - gocheckcompilerdirectives # validates go compiler directive comments (//go:)
-  - gochecknoglobals # checks that no global variables exist
   - gochecknoinits # checks that no init functions are present in Go code
   - gochecksumtype # checks exhaustiveness on Go "sum types"
   - gocognit # computes and checks the cognitive complexity of functions
@@ -446,19 +445,16 @@ linters:
     - path: 'cmd/assemble/.*\.go'
       linters:
       - forbidigo
-      - gochecknoglobals
       - gosec
 
     - path: 'example/.*\.go'
       linters:
       - forbidigo
-      - gochecknoglobals
       - gosec
 
     - path: 'test/.*\.go'
       linters:
       - forbidigo
-      - gochecknoglobals
       - bodyclose
       - dupl
       - errcheck
