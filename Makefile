@@ -5,11 +5,9 @@ all: install generate-example run-example
 generate-example:
 	go run ./cmd/assemble/main.go -pkg ./example/core.go -var Core -o ./example/core_assemble_gen.go
 
-
 .PHONY: generate
 generate:
 	go generate ./...
-
 
 .PHONY: run-example
 run-example:
