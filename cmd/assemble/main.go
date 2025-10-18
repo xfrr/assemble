@@ -117,7 +117,7 @@ func extractFromFunctionTwoPass(pkgArg, funcName string, fset *token.FileSet) (p
 		return parser.Model{}, "", "", err
 	}
 
-	ref, genFnName, refErr := parser.ExtractFunctionModuleRefLoose(pA, funcName, fset)
+	ref, genFnName, refErr := parser.ExtractFunctionModuleRefLoose(pA, funcName)
 	if refErr != nil {
 		return parser.Model{}, "", "", refErr
 	}
