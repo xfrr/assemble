@@ -6,6 +6,12 @@ type Model struct {
 	Binds    []Bind
 	Starts   []StartHook
 	Stops    []StopHook
+	Imports  []Import
+}
+
+type Import struct {
+	Alias string // empty means default import name
+	Path  string // fully-qualified import path, e.g., "github.com/xfrr/assemble"
 }
 
 type Provide struct {
@@ -56,7 +62,7 @@ type StopHook struct {
 	PkgAlias    string
 	Priority    int
 	TimeoutMs   int64
-	TimeoutExpr string // NEW
+	TimeoutExpr string
 	IsFuncLit   bool
 	RawFuncLit  string
 

@@ -2,12 +2,12 @@ package assemble
 
 // KeyOpt modifies the key used to look up a dependency.
 type KeyOpt interface {
-	apply(*key)
+	apply(*Key)
 }
 
 type withName struct{ name string }
 
-func (o withName) apply(k *key) {
+func (o withName) apply(k *Key) {
 	k.name = o.name
 }
 

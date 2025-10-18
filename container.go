@@ -18,12 +18,12 @@ const (
 type Container struct {
 	mu       sync.RWMutex
 	reg      *module
-	cache    map[key]any
+	cache    map[Key]any
 	started  bool
 	stopping bool
 
 	// creation order tracking for reverse dependency-aware shutdown
-	creationIndex map[key]int
+	creationIndex map[Key]int
 	createSeq     int
 }
 
@@ -35,8 +35,8 @@ func Assemble(ms ...Module) (*Container, error) {
 	}
 	return &Container{
 		reg:           mod,
-		cache:         make(map[key]any),
-		creationIndex: make(map[key]int),
+		cache:         make(map[Key]any),
+		creationIndex: make(map[Key]int),
 	}, nil
 }
 
@@ -152,7 +152,7 @@ func (c *Container) Shutdown(ctx context.Context) error {
 }
 
 // rawGet is the internal, non-generic resolver used by di.Get[T].
-func (c *Container) rawGet(ctx context.Context, k key) (any, error) {
+func (c *Container) rawGet(ctx context.Context, k Key) (any, error) {
 	// fast path: cached
 	c.mu.RLock()
 	if v, ok := c.cache[k]; ok {
@@ -199,7 +199,7 @@ func (c *Container) rawGet(ctx context.Context, k key) (any, error) {
 	return nil, NotFoundError{Type: k.typ, Name: k.name}
 }
 
-func (c *Container) resolveDirect(ctx context.Context, k key) (any, error) {
+func (c *Container) resolveDirect(ctx context.Context, k Key) (any, error) {
 	fns, ok := c.reg.providers[k]
 	if !ok || len(fns) == 0 {
 		return nil, NotFoundError{Type: k.typ, Name: k.name}
@@ -234,7 +234,7 @@ func (c *Container) resolveDirect(ctx context.Context, k key) (any, error) {
 }
 
 // resolveViaBind tries to find a concrete type for interface lookups.
-func (c *Container) resolveViaBind(ctx context.Context, k key) (any, error) {
+func (c *Container) resolveViaBind(ctx context.Context, k Key) (any, error) {
 	// scan providers to find a concrete type implementing k.typ
 	for pk := range c.reg.providers {
 		if pk.sliceElem != nil {

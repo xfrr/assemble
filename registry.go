@@ -2,32 +2,7 @@ package assemble
 
 import (
 	"context"
-	"reflect"
 )
-
-// internal key for registry/cache
-type key struct {
-	typ       reflect.Type
-	name      string
-	sliceElem reflect.Type // if typ is a slice, this is the element type
-}
-
-func typeOf[T any]() reflect.Type {
-	var z *T
-	return reflect.TypeOf(z).Elem()
-}
-
-func keyFor[T any](opts ...KeyOpt) key {
-	t := typeOf[T]()
-	k := key{typ: t}
-	for _, o := range opts {
-		o.apply(&k)
-	}
-	if t.Kind() == reflect.Slice {
-		k.sliceElem = t.Elem()
-	}
-	return k
-}
 
 type provideReg[T any] struct {
 	p    Provider[T]

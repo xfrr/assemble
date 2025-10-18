@@ -12,7 +12,7 @@ var (
 )
 
 type BadCastError struct {
-	Key  key
+	Key  Key
 	From reflect.Type
 	To   reflect.Type
 }

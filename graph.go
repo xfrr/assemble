@@ -12,7 +12,7 @@ func (c *Container) ExportCreationOrderDOT() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	type node struct {
-		k key
+		k Key
 		i int
 	}
 	nodes := make([]node, 0, len(c.creationIndex))
@@ -38,7 +38,7 @@ func (c *Container) ExportCreationOrderPlantUML() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	type node struct {
-		k key
+		k Key
 		i int
 	}
 	nodes := make([]node, 0, len(c.creationIndex))
@@ -56,7 +56,7 @@ func (c *Container) ExportCreationOrderPlantUML() string {
 	return b.String()
 }
 
-func keyLabel(k key) string {
+func keyLabel(k Key) string {
 	name := ""
 	if k.name != "" {
 		name = " name=" + k.name
