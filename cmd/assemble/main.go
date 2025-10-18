@@ -15,51 +15,75 @@ import (
 	"github.com/xfrr/assemble/internal/render"
 )
 
+/* =========================
+   CLI
+   ========================= */
+
+type cliArgs struct {
+	pkgArg     string
+	varName    string
+	funcName   string
+	outputPath string
+}
+
 func main() {
-	var (
-		pkgArg     = flag.String("pkg", ".", "Go package (import path or ./relative)")
-		varName    = flag.String("var", "Core", "assemble.Module variable name to parse (ignored if -fn is provided)")
-		funcName   = flag.String("fn", "", "function name that returns assemble.Assemble(...) (optional)")
-		outputPath = flag.String("o", "gen.go", "output file (e.g., ./build_assemble_gen.go)")
-	)
-	flag.Parse()
-	if *outputPath == "" {
-		log.Fatal("-o output file is required")
-	}
+	log.SetFlags(0) // clean logs
 
-	fset := token.NewFileSet()
-
-	switch {
-	case *funcName != "":
-		mod, pkgPath, genFn, err := extractFromFunctionTwoPass(*pkgArg, *funcName, fset)
-		if err != nil {
-			log.Fatalf("parse function: %v", err)
-		}
-		writeOut(*outputPath, *varName, genFn, pkgPath, mod)
-
-	default:
-		// -------- Variable-export mode (single-pass) ----------
-		cfg := loadConfig(dirFor(*pkgArg), nil, fset)
-		pkgs, loadErr := packages.Load(cfg, *pkgArg)
-		if loadErr != nil {
-			log.Fatalf("load: %v", loadErr)
-		}
-		if packages.PrintErrors(pkgs) > 0 || len(pkgs) == 0 {
-			log.Fatalf("failed loading package %q", *pkgArg)
-		}
-		p := pkgs[0]
-
-		mod, extractErr := parser.ExtractModule(p, *varName, fset)
-		if extractErr != nil {
-			log.Fatalf("parse module: %v", extractErr)
-		}
-
-		mod.SetPkgName(p.Name)
-		writeOut(*outputPath, *varName, "Assemble"+*varName, p.PkgPath, mod)
+	args := parseArgs()
+	if err := run(args); err != nil {
+		log.Fatal(err)
 	}
 }
 
-func writeOut(outputPath, varName, genFnName, currentPkgPath string, mod parser.Model) {
+func parseArgs() cliArgs {
+	var a cliArgs
+	flag.StringVar(&a.pkgArg, "pkg", ".", "Go package (import path or ./relative)")
+	flag.StringVar(&a.varName, "var", "Core", "assemble.Module variable name to parse (ignored if -fn is provided)")
+	flag.StringVar(&a.funcName, "fn", "", "function name that returns assemble.Assemble(...) (optional)")
+	flag.StringVar(&a.outputPath, "o", "gen.go", "output file (e.g., ./build_assemble_gen.go)")
+	flag.Parse()
+
+	if a.outputPath == "" {
+		log.Fatal("-o output file is required")
+	}
+	return a
+}
+
+func run(a cliArgs) error {
+	fset := token.NewFileSet()
+
+	switch {
+	case a.funcName != "":
+		// Two-pass: (A) loose AST to find the module reference, (B) typed load to parse it.
+		mod, pkgPath, genFn, err := extractFromFunctionTwoPass(a.pkgArg, a.funcName, fset)
+		if err != nil {
+			return fmt.Errorf("parse function: %w", err)
+		}
+		return writeOut(a.outputPath, a.varName, genFn, pkgPath, mod)
+
+	default:
+		// Single-pass variable mode.
+		cfg := loadConfig(dirFor(a.pkgArg), nil, fset)
+		p, err := loadOnePackage(cfg, a.pkgArg, "load package")
+		if err != nil {
+			return err
+		}
+
+		mod, err := parser.ExtractModule(p, a.varName, fset)
+		if err != nil {
+			return fmt.Errorf("parse module: %w", err)
+		}
+		mod.SetPkgName(p.Name)
+
+		return writeOut(a.outputPath, a.varName, "Assemble"+a.varName, p.PkgPath, mod)
+	}
+}
+
+/* =========================
+   Orchestration
+   ========================= */
+
+func writeOut(outputPath, varName, genFnName, currentPkgPath string, mod parser.Model) error {
 	cfg := render.Config{
 		IsVarBased:     varName != "",
 		VarName:        varName,
@@ -69,53 +93,49 @@ func writeOut(outputPath, varName, genFnName, currentPkgPath string, mod parser.
 		CurrentPkgPath: currentPkgPath,
 	}
 
-	src, emitErr := render.EmitWithFunc(mod, cfg)
-	if emitErr != nil {
-		log.Fatalf("render: %v", emitErr)
+	src, err := render.EmitWithFunc(mod, cfg)
+	if err != nil {
+		return fmt.Errorf("render: %w", err)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
-		log.Fatalf("mkdir: %v", err)
+	if mkdirErr := os.MkdirAll(safeDir(outputPath), 0o755); mkdirErr != nil {
+		return fmt.Errorf("mkdir: %w", mkdirErr)
 	}
-	if err := os.WriteFile(outputPath, []byte(src), 0o644); err != nil {
-		log.Fatalf("write: %v", err)
+	if writeErr := os.WriteFile(outputPath, []byte(src), 0o644); writeErr != nil {
+		return fmt.Errorf("write: %w", writeErr)
 	}
+
 	fmt.Printf("assemblegen: wrote %s (%d bytes)\n", outputPath, len(src))
+	return nil
 }
 
 func extractFromFunctionTwoPass(pkgArg, funcName string, fset *token.FileSet) (parser.Model, string, string, error) {
+	// Pass A: syntax-only (with build tag) to avoid referencing generated code.
 	cfgA := loadConfigSyntaxOnly(dirFor(pkgArg), []string{"-tags=assemble_codegen"}, fset)
-	pkgsA, err := packages.Load(cfgA, pkgArg)
+	pA, err := loadOnePackage(cfgA, pkgArg, "load (A)")
 	if err != nil {
-		return parser.Model{}, "", "", fmt.Errorf("load (A): %w", err)
+		return parser.Model{}, "", "", err
 	}
-	if len(pkgsA) == 0 {
-		return parser.Model{}, "", "", fmt.Errorf("failed loading package (A) %q", pkgArg)
-	}
-	pA := pkgsA[0]
 
 	ref, genFnName, refErr := parser.ExtractFunctionModuleRefLoose(pA, funcName, fset)
 	if refErr != nil {
 		return parser.Model{}, "", "", refErr
 	}
 
+	// Pass B: full typed load.
 	cfgB := loadConfig(dirFor(pkgArg), nil, fset)
 
 	switch {
 	case ref.IsLocalIdent:
-		pkgsB, err := packages.Load(cfgB, pkgArg)
-		if err != nil {
-			return parser.Model{}, "", "", fmt.Errorf("load (B local): %w", err)
+		pB, pBErr := loadOnePackage(cfgB, pkgArg, "load (B local)")
+		if pBErr != nil {
+			return parser.Model{}, "", "", pBErr
 		}
-		if packages.PrintErrors(pkgsB) > 0 || len(pkgsB) == 0 {
-			return parser.Model{}, "", "", fmt.Errorf("failed loading package (B local) %q", pkgArg)
+		mod, modErr := parser.ExtractModule(pB, ref.Ident, fset)
+		if modErr != nil {
+			return parser.Model{}, "", "", fmt.Errorf("extract local module %q: %w", ref.Ident, modErr)
 		}
-		pB := pkgsB[0]
-		mod, err := parser.ExtractModule(pB, ref.Ident, fset)
-		if err != nil {
-			return parser.Model{}, "", "", fmt.Errorf("extract local module %q: %w", ref.Ident, err)
-		}
-		// merge function-file imports so renderer can include them
+		// Merge function-file imports so renderer can include them.
 		mod.Imports = append(mod.Imports, ref.Imports...)
 		mod.SetPkgName(pB.Name)
 		return mod, pB.PkgPath, genFnName, nil
@@ -124,17 +144,15 @@ func extractFromFunctionTwoPass(pkgArg, funcName string, fset *token.FileSet) (p
 		if ref.SelPkgPath == "" {
 			return parser.Model{}, "", "", fmt.Errorf("could not resolve import path for alias %q", ref.SelPkgAlias)
 		}
-		pkgsB, err := packages.Load(cfgB, ref.SelPkgPath)
-		if err != nil {
-			return parser.Model{}, "", "", fmt.Errorf("load (B foreign %q): %w", ref.SelPkgPath, err)
+		q, qErr := loadOnePackage(cfgB, ref.SelPkgPath, "load (B foreign)")
+		if qErr != nil {
+			return parser.Model{}, "", "", qErr
 		}
-		if packages.PrintErrors(pkgsB) > 0 || len(pkgsB) == 0 {
-			return parser.Model{}, "", "", fmt.Errorf("failed loading foreign package %q", ref.SelPkgPath)
-		}
-		q := pkgsB[0]
-		mod, err := parser.ExtractModule(q, ref.SelIdent, fset)
-		if err != nil {
-			return parser.Model{}, "", "", fmt.Errorf("extract foreign module %s.%s: %w", ref.SelPkgPath, ref.SelIdent, err)
+		mod, modErr := parser.ExtractModule(q, ref.SelIdent, fset)
+		if modErr != nil {
+			return parser.Model{},
+				"", "",
+				fmt.Errorf("extract foreign module %s.%s: %w", ref.SelPkgPath, ref.SelIdent, modErr)
 		}
 		mod.Imports = append(mod.Imports, ref.Imports...)
 		mod.SetPkgName(q.Name)
@@ -142,6 +160,21 @@ func extractFromFunctionTwoPass(pkgArg, funcName string, fset *token.FileSet) (p
 	}
 
 	return parser.Model{}, "", "", errors.New("unsupported module reference shape")
+}
+
+/* =========================
+   packages helpers
+   ========================= */
+
+func loadOnePackage(cfg *packages.Config, pattern string, ctx string) (*packages.Package, error) {
+	pkgs, err := packages.Load(cfg, pattern)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", ctx, err)
+	}
+	if packages.PrintErrors(pkgs) > 0 || len(pkgs) == 0 {
+		return nil, fmt.Errorf("failed %s %q", ctx, pattern)
+	}
+	return pkgs[0], nil
 }
 
 func loadConfig(dir string, buildFlags []string, fset *token.FileSet) *packages.Config {
@@ -170,10 +203,28 @@ func loadConfigSyntaxOnly(dir string, buildFlags []string, fset *token.FileSet) 
 	return cfg
 }
 
+/* =========================
+   small utils
+   ========================= */
+
+// dirFor returns the directory to set in packages.Config for relative patterns.
+// Keeps original behavior but accepts "." and "./...".
 func dirFor(arg string) string {
-	if len(arg) >= 2 && arg[:2] == "./" {
+	if arg == "." || hasDotSlashPrefix(arg) {
 		wd, _ := os.Getwd()
 		return wd
 	}
 	return ""
+}
+
+func hasDotSlashPrefix(s string) bool {
+	return len(s) >= 2 && s[:2] == "./"
+}
+
+func safeDir(p string) string {
+	d := filepath.Dir(p)
+	if d == "" || d == "." {
+		return "."
+	}
+	return d
 }
