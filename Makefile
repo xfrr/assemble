@@ -1,9 +1,17 @@
 .PHONY: all
-all: install generate-example run-example
+all: install generate-example-var generate-example-fn generate-bench
 
 .PHONY: generate-example
-generate-example:
-	go run ./cmd/assemble/main.go -pkg ./example/core.go -var Core -o ./example/core_assemble_gen.go
+generate-example-var:
+	go run ./cmd/assemble/main.go -pkg ./example/di -var Core -o ./example/di/assemble_core_gen.go
+
+.PHONY: generate-example-fn
+generate-example-fn:
+	go run ./cmd/assemble/main.go -pkg ./example/di -fn AssembleServer -o ./example/di/assemble_server_gen.go
+
+.PHONY: generate-bench
+generate-bench:
+	go run ./cmd/assemble/main.go -pkg ./test -var NodeDependencyGraph -o ./test/benchmark_assemble_gen.go
 
 .PHONY: generate
 generate:

@@ -19,6 +19,7 @@ const (
 	typeModuleIdent = "Module"          // identifier when unqualified (same package)
 	typeModuleQual  = "assemble.Module" // qualified type hint in errors
 
+	fnAssemble   = "Assemble"
 	fnProvide    = "Provide"
 	fnSet        = "Set"
 	fnBind       = "Bind"
@@ -43,6 +44,19 @@ const (
 const (
 	provideFuncParamCount = 2 // (context.Context, assemble.Resolver)
 )
+
+// Lightweight reference to the argument of assemble.Assemble(...)
+type ModuleRef struct {
+	IsLocalIdent bool
+	Ident        string
+
+	IsSelector  bool
+	SelPkgAlias string
+	SelIdent    string
+	SelPkgPath  string // resolved from file imports without types
+
+	Imports []Import // imports from the file that declared the function
+}
 
 // ExtractModule scans the given package for a variable named `varName`
 // and attempts to parse its value as an assemble module definition.
@@ -72,6 +86,221 @@ func ExtractModule(p *packages.Package, varName string, fset *token.FileSet) (Mo
 	return mdl, nil
 }
 
+// ExtractFromFunction finds a function with name funcName in package p,
+// looks for a `return assemble.Assemble(<expr>)`, resolves <expr> as a module
+// (ident or selector), and returns the parsed Model along with the function name
+// so the renderer can reuse it verbatim.
+func ExtractFromFunction(p *packages.Package, funcName string, fset *token.FileSet) (Model, string, error) {
+	var mdl Model
+	var found bool
+	var firstErr error
+
+	for _, f := range p.Syntax {
+		ast.Inspect(f, func(n ast.Node) bool {
+			fd, ok := n.(*ast.FuncDecl)
+			if !ok || fd.Name == nil || fd.Name.Name != funcName || fd.Body == nil {
+				return true
+			}
+			// Find: return assemble.Assemble(<expr>)
+			modRef := findAssembleReturnArg(p, fd.Body)
+			if modRef == nil {
+				firstErr = fmt.Errorf("function %q does not return assemble.Assemble(<module>)", funcName)
+				return false
+			}
+
+			// Resolve module expression to a Model (ident or selector).
+			m, err := extractModuleFromExpr(p, modRef, fset)
+			if err != nil {
+				firstErr = fmt.Errorf("extracting module from %q: %w", exprText(modRef), err)
+				return false
+			}
+
+			// Collect imports from the file that declared the function.
+			m.Imports = append(m.Imports, collectFileImports(p, f)...)
+
+			mdl = m
+			found = true
+			return false
+		})
+		if found || firstErr != nil {
+			break
+		}
+	}
+	if firstErr != nil {
+		return mdl, "", firstErr
+	}
+	if !found {
+		return mdl, "", fmt.Errorf("function %q not found", funcName)
+	}
+	return mdl, funcName, nil
+}
+
+// ExtractFunctionModuleRefLoose scans the syntax (no types) to find:
+//
+//	func <funcName>(...) { return assemble.Assemble(<expr>) }
+//
+// It returns a ModuleRef with the argument <expr> and the file's imports resolved
+// purely from AST (aliases from source or last path segment).
+func ExtractFunctionModuleRefLoose(p *packages.Package, funcName string, fset *token.FileSet) (ModuleRef, string, error) {
+	var out ModuleRef
+	var found bool
+
+	for _, f := range p.Syntax {
+		ast.Inspect(f, func(n ast.Node) bool {
+			fd, ok := n.(*ast.FuncDecl)
+			if !ok || fd.Name == nil || fd.Name.Name != funcName || fd.Body == nil {
+				return true
+			}
+			arg := findAssembleReturnArgExprLoose(fd.Body)
+			if arg == nil {
+				return false
+			}
+
+			switch v := arg.(type) {
+			case *ast.Ident:
+				out.IsLocalIdent = true
+				out.Ident = v.Name
+			case *ast.SelectorExpr:
+				if base, ok := v.X.(*ast.Ident); ok {
+					out.IsSelector = true
+					out.SelPkgAlias = base.Name
+					out.SelIdent = v.Sel.Name
+				}
+			default:
+				// unsupported expression form
+			}
+
+			// Resolve imports from this file (AST only).
+			fileImports := collectFileImportsNoTypes(f)
+			out.Imports = append(out.Imports, fileImports...)
+
+			// If selector, map alias -> import path.
+			if out.IsSelector && out.SelPkgPath == "" {
+				for _, im := range fileImports {
+					if im.Alias == out.SelPkgAlias {
+						out.SelPkgPath = im.Path
+						break
+					}
+				}
+			}
+
+			found = true
+			return false
+		})
+		if found {
+			break
+		}
+	}
+
+	if !found {
+		return out, "", fmt.Errorf("function %q not found or does not return assemble.Assemble(<module>)", funcName)
+	}
+	return out, funcName, nil
+}
+
+// findAssembleReturnArgExprLoose finds `return assemble.Assemble(<expr>)` without types.
+func findAssembleReturnArgExprLoose(body *ast.BlockStmt) ast.Expr {
+	for _, st := range body.List {
+		ret, ok := st.(*ast.ReturnStmt)
+		if !ok {
+			continue
+		}
+		for _, r := range ret.Results {
+			call, ok := r.(*ast.CallExpr)
+			if !ok {
+				continue
+			}
+			// match assemble.Assemble(...) shape syntactically
+			switch fn := call.Fun.(type) {
+			case *ast.SelectorExpr:
+				// <pkg or ident>.Assemble
+				if id, ok := fn.X.(*ast.Ident); ok && fn.Sel != nil && fn.Sel.Name == "Assemble" && id.Name != "" {
+					if len(call.Args) >= 1 {
+						return call.Args[0]
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// collectFileImportsNoTypes collects imports from the given *ast.File without
+// relying on packages.Package.Imports or types. It uses explicit alias if present,
+// otherwise the last path segment as alias.
+func collectFileImportsNoTypes(f *ast.File) []Import {
+	seen := make(map[string]struct{})
+	var out []Import
+
+	for _, is := range f.Imports {
+		raw := is.Path.Value // quoted
+		pathStr, _ := strconv.Unquote(raw)
+		if pathStr == "" {
+			continue
+		}
+		// skip side-effect and dot imports (we won't emit them)
+		if is.Name != nil && (is.Name.Name == "_" || is.Name.Name == ".") {
+			continue
+		}
+
+		var alias string
+		if is.Name != nil {
+			alias = is.Name.Name
+		} else {
+			alias = path.Base(pathStr)
+		}
+
+		if _, dup := seen[pathStr]; dup {
+			continue
+		}
+		seen[pathStr] = struct{}{}
+		out = append(out, Import{Alias: alias, Path: pathStr})
+	}
+	return out
+}
+
+// findAssembleReturnArg searches for a `return assemble.Assemble(<expr>)` inside a block.
+func findAssembleReturnArg(p *packages.Package, body *ast.BlockStmt) ast.Expr {
+	for _, stmt := range body.List {
+		ret, ok := stmt.(*ast.ReturnStmt)
+		if !ok {
+			continue
+		}
+		for _, res := range ret.Results {
+			call, ok := res.(*ast.CallExpr)
+			if !ok {
+				continue
+			}
+			fn, alias := funName(p, call.Fun)
+			if fn != fnAssemble {
+				continue
+			}
+			// Ensure it's assemble.Assemble (or Assemble from assemble pkg by alias)
+			if alias == "" {
+				// Unqualified "Assemble" is too ambiguous; skip to be strict.
+				continue
+			}
+			// Accept first arg as the module reference.
+			if len(call.Args) >= 1 {
+				return call.Args[0]
+			}
+		}
+	}
+	return nil
+}
+
+// extractModuleFromExpr resolves an expression (Ident or Selector) referring to a module var.
+func extractModuleFromExpr(p *packages.Package, e ast.Expr, fset *token.FileSet) (Model, error) {
+	switch v := e.(type) {
+	case *ast.Ident:
+		return ExtractModule(p, v.Name, fset)
+	case *ast.SelectorExpr:
+		return parseModuleFromSelector(p, v, fset)
+	default:
+		return Model{}, fmt.Errorf("unsupported module expression %q (want Ident or SelectorExpr)", exprText(e))
+	}
+}
+
 /* =========================
    File-level extraction
    ========================= */
@@ -96,7 +325,6 @@ func extractFromFile(p *packages.Package, f *ast.File, varName string, fset *tok
 
 			switch v := vs.Values[i].(type) {
 			case *ast.CompositeLit:
-				// Core case: assemble.Module{ ... }
 				m, err := parseModuleComposite(p, v, fset)
 				if err != nil {
 					perFileErr = err
@@ -119,7 +347,6 @@ func extractFromFile(p *packages.Package, f *ast.File, varName string, fset *tok
 				}
 
 			case *ast.SelectorExpr:
-				// Handle: otherpkg.Core
 				m, err := parseModuleFromSelector(p, v, fset)
 				if err != nil {
 					perFileErr = err

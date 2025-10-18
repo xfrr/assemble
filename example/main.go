@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	assemble "github.com/xfrr/assemble"
+	"github.com/xfrr/assemble/example/di"
 )
 
 func main() {
@@ -12,7 +13,7 @@ func main() {
 	defer cancel()
 
 	// Build the container using the compiled Assemble function
-	container, err := AssembleCore()
+	container, err := di.AssembleServer()
 	if err != nil {
 		panic(err)
 	}
@@ -30,7 +31,12 @@ func main() {
 	}
 
 	// Resolve after Start using the container directly (it implements assemble.Resolver)
-	srv, err := assemble.Get[*Server](ctx, container)
+	_, err = assemble.Get[*di.Server](ctx, container)
+	if err != nil {
+		panic(err)
+	}
+
+	logger, err := assemble.Get[di.SimpleLogger](ctx, container)
 	if err != nil {
 		panic(err)
 	}
@@ -39,7 +45,7 @@ func main() {
 	fmt.Println(container.ExportCreationOrderDOT())
 	fmt.Println("----- Creation Order PlantUML -----")
 	fmt.Println(container.ExportCreationOrderPlantUML())
-	srv.logger.Info("Server is running...")
+	logger.Info("Server is running...")
 
 	if shutdownErr := container.Shutdown(context.Background()); shutdownErr != nil {
 		panic(shutdownErr)

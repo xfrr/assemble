@@ -7,7 +7,12 @@ type Model struct {
 	Starts   []StartHook
 	Stops    []StopHook
 	Imports  []Import
+
+	_pkgName string // used by renderer
 }
+
+func (m *Model) SetPkgName(name string) { m._pkgName = name }
+func (m *Model) PkgName() string        { return m._pkgName }
 
 type Import struct {
 	Alias string // empty means default import name
