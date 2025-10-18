@@ -5,10 +5,6 @@ import (
 	"time"
 )
 
-/* =========================
-   Public API: Hook options
-   ========================= */
-
 type HookOpt interface {
 	applyStart(*startHook)
 	applyStop(*stopHook)
@@ -27,7 +23,7 @@ func WithStartTimeout(d time.Duration) HookOpt { return startTimeoutOpt{d: d} }
 func WithPriority(p int) HookOpt { return priorityOpt{p: p} }
 
 /* =========================
-   Internal: Hooks model
+   Hooks model
    ========================= */
 
 type hookFunc func(context.Context, Resolver) error
@@ -127,7 +123,7 @@ func (r *invokeReg) register(m *module) {
 }
 
 /* =========================
-   Small utilities
+   Utils
    ========================= */
 
 func applyStopOpts(h *stopHook, opts []HookOpt) {

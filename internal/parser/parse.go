@@ -14,10 +14,6 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
-/* =========================
-   Constants
-   ========================= */
-
 const (
 	pkgAssemble     = "assemble"
 	typeModuleIdent = "Module"          // unqualified identifier (same package)
@@ -46,10 +42,6 @@ const (
 
 	provideFuncParamCount = 2 // (context.Context, assemble.Resolver)
 )
-
-/* =========================
-   Types
-   ========================= */
 
 // ModuleRef represents a reference to a module variable, either local or from another package.
 type ModuleRef struct {
@@ -798,7 +790,7 @@ func parseForSignatureFlags(p *packages.Package, expr ast.Expr) (bool, bool) {
 }
 
 /* =========================
-   Low-level utils
+   Utils
    ========================= */
 
 func objectOf(p *packages.Package, e ast.Expr) types.Object {

@@ -15,7 +15,7 @@ func (m Module) clone() Module {
 }
 
 type module struct {
-	// map[key] -> list of providers (singletons). If multiple, last wins for non-set lookups.
+	// map[key] -> list of providers. If multiple, last wins for non-set lookups.
 	providers map[Key][]func(context.Context, Resolver) (any, error)
 	// interface bindings: iface key -> impl type (concrete)
 	binds map[Key]reflect.Type

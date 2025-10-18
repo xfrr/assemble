@@ -30,10 +30,6 @@ func NamedKey[T any](name string) Key {
 	return k
 }
 
-/* =========================
-   Backward-compatible API
-   ========================= */
-
 // keyFor is the legacy constructor that accepts options (may allocate when opts is non-empty).
 // Prefer KeyOf / NamedKey in hot paths.
 func keyFor[T any](opts ...KeyOpt) Key {
@@ -45,7 +41,7 @@ func keyFor[T any](opts ...KeyOpt) Key {
 }
 
 /* =========================
-   Internal: type metadata cache
+   Type metadata cache
    ========================= */
 
 type typeMeta struct {

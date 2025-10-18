@@ -3,9 +3,8 @@
 **assemble** is a pragmatic, lightweight dependency injection (DI) library for Go.  
 It focuses on **clarity**, **type safety**, and **zero reflection** through a combination of runtime and generated dependency graphs.
 
-[![Go Build](https://github.com/xfrr/assemble/actions/workflows/go_build.yaml/badge.svg)](https://github.com/xfrr/assemble/actions/workflows/go_build.yaml)
+[![Go Build and Test](https://github.com/xfrr/assemble/actions/workflows/go_build.yaml/badge.svg)](https://github.com/xfrr/assemble/actions/workflows/go_build.yaml)
 [![Go Lint](https://github.com/xfrr/assemble/actions/workflows/go_lint.yaml/badge.svg)](https://github.com/xfrr/assemble/actions/workflows/go_lint.yaml)
----
 
 ## Key Features
 

@@ -12,10 +12,6 @@ import (
 	"github.com/xfrr/assemble/internal/parser"
 )
 
-/* =========================
-   Constants
-   ========================= */
-
 const (
 	importPathAssemble = "github.com/xfrr/assemble"
 	importStdContext   = "context"
@@ -42,10 +38,6 @@ const (
 		"  return c, nil\n" +
 		"}\n"
 )
-
-/* =========================
-   Public API
-   ========================= */
 
 type Config struct {
 	IsVarBased     bool

@@ -75,14 +75,12 @@ func GetByKey[T any](ctx context.Context, r Resolver, k Key) (T, error) {
 // When called with no KeyOpt, it uses a zero-alloc fast path.
 // If options are provided, it falls back to building a keyed lookup once.
 func Get[T any](ctx context.Context, r Resolver, opts ...KeyOpt) (T, error) {
-	// Fast path: no options -> zero-alloc key
 	if len(opts) == 0 {
-		k := keyFor[T]() // zero-alloc
+		k := keyFor[T]()
 		return GetByKey[T](ctx, r, k)
 	}
 
-	// Slow path: apply options (may allocate) — still just once per call
-	k := keyFor[T]() // zero-alloc base; only name/other opts may allocate
+	k := keyFor[T]()
 	for _, o := range opts {
 		o.apply(&k)
 	}
