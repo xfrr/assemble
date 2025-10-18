@@ -40,6 +40,10 @@ const (
 	kindStop  = "stop"
 )
 
+const (
+	provideFuncParamCount = 2 // (context.Context, assemble.Resolver)
+)
+
 // ExtractModule scans the given package for a variable named `varName`
 // and attempts to parse its value as an assemble module definition.
 func ExtractModule(p *packages.Package, varName string, fset *token.FileSet) (Model, error) {
@@ -458,9 +462,10 @@ func fillProvideFromExpr(p *packages.Package, pr *Provide, expr ast.Expr) {
 }
 
 func fillProvideFromSignature(p *packages.Package, pr *Provide, sig *types.Signature) {
-	if sig.Params().Len() == 1 && isResolverLike(sig.Params().At(0).Type()) {
+	if sig.Params().Len() == provideFuncParamCount && isResolverLike(sig.Params().At(1).Type()) {
 		pr.TakesResolve = true
 	}
+
 	switch sig.Results().Len() {
 	case 1:
 		pr.ResType = typeString(p, sig.Results().At(0).Type())

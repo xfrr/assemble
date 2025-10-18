@@ -2,30 +2,25 @@
 package main
 
 import (
-	context "context"
+	"context"
+	"time"
+
 	assemble "github.com/xfrr/assemble"
 	di "github.com/xfrr/assemble/example/di"
-	time "time"
 )
 
-//go:generate assemble -var Core -o ./example/core_assemble_gen.go
+//go:generate assemble -var Core -o ./core_assemble_gen.go
 func Assemble() (*assemble.Container, error) {
 	regs := make([]assemble.Registrar, 0, 6)
-	regs = append(regs, assemble.Provide[di.SimpleLogger](func(ctx context.Context, r assemble.Resolver) (di.SimpleLogger, error) {
-		prov := func(_ context.Context, _ assemble.Resolver) (di.SimpleLogger, error) {
-			z, err := di.NewSimpleLogger()
-			if err != nil {
-				return di.SimpleLogger{}, err
-			}
-			return z, nil
+	regs = append(regs, assemble.Provide[di.SimpleLogger](func(_ context.Context, _ assemble.Resolver) (di.SimpleLogger, error) {
+		z, err := di.NewSimpleLogger()
+		if err != nil {
+			return di.SimpleLogger{}, err
 		}
-		return prov(ctx, r)
+		return z, nil
 	}))
-	regs = append(regs, assemble.Provide[*di.InMemoryRepo](func(ctx context.Context, r assemble.Resolver) (*di.InMemoryRepo, error) {
-		prov := func(_ context.Context, _ assemble.Resolver) (*di.InMemoryRepo, error) {
-			return di.NewInMemoryRepo()
-		}
-		return prov(ctx, r)
+	regs = append(regs, assemble.Provide[*di.InMemoryRepo](func(_ context.Context, _ assemble.Resolver) (*di.InMemoryRepo, error) {
+		return di.NewInMemoryRepo()
 	}))
 	regs = append(regs, assemble.Provide[*Server](func(ctx context.Context, r assemble.Resolver) (*Server, error) { return NewServer(ctx, r) }))
 	regs = append(regs, assemble.OnStart(func(ctx context.Context, r assemble.Resolver) error { return StartServer(ctx, r) }))

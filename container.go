@@ -250,7 +250,11 @@ func (c *Container) resolveViaBind(ctx context.Context, k Key) (any, error) {
 				return nil, err
 			}
 			if !reflect.TypeOf(v).Implements(k.typ) {
-				return nil, BindError{From: k.typ, To: pk.typ, Why: "implementation does not satisfy interface at runtime"}
+				return nil, BindError{
+					From: k.typ,
+					To:   pk.typ,
+					Why:  "implementation does not satisfy interface at runtime",
+				}
 			}
 			return v, nil
 		}

@@ -16,12 +16,12 @@ import (
 
 func main() {
 	var (
-		pkgArg  = flag.String("pkg", ".", "Go package (import path or ./relative)")
-		varName = flag.String("var", "Core", "assemble.Module variable name to parse")
-		out     = flag.String("o", "gen.go", "output file (e.g., ./build_assemble_gen.go)")
+		pkgArg     = flag.String("pkg", ".", "Go package (import path or ./relative)")
+		varName    = flag.String("var", "Core", "assemble.Module variable name to parse")
+		outputPath = flag.String("o", "gen.go", "output file (e.g., ./build_assemble_gen.go)")
 	)
 	flag.Parse()
-	if *out == "" {
+	if *outputPath == "" {
 		log.Fatal("-o output file is required")
 	}
 
@@ -33,33 +33,33 @@ func main() {
 		Tests: false,
 	}
 
-	pkgs, err := packages.Load(cfg, *pkgArg)
-	if err != nil {
-		log.Fatalf("load: %v", err)
+	pkgs, loadErr := packages.Load(cfg, *pkgArg)
+	if loadErr != nil {
+		log.Fatalf("load: %v", loadErr)
 	}
 	if packages.PrintErrors(pkgs) > 0 || len(pkgs) == 0 {
 		log.Fatalf("failed loading package %q", *pkgArg)
 	}
 	p := pkgs[0]
 
-	mod, err := parser.ExtractModule(p, *varName, fset)
-	if err != nil {
-		log.Fatalf("parse module: %v", err)
+	mod, extractErr := parser.ExtractModule(p, *varName, fset)
+	if extractErr != nil {
+		log.Fatalf("parse module: %v", extractErr)
 	}
 
-	src, err := render.Emit(*varName, p.Name, *out, mod)
-	if err != nil {
-		log.Fatalf("render: %v", err)
+	src, emitErr := render.Emit(*varName, p.Name, *outputPath, mod)
+	if emitErr != nil {
+		log.Fatalf("render: %v", emitErr)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(*out), 0o755); err != nil {
-		log.Fatalf("mkdir: %v", err)
+	if mkdirErr := os.MkdirAll(filepath.Dir(*outputPath), 0o755); mkdirErr != nil {
+		log.Fatalf("mkdir: %v", mkdirErr)
 	}
-	if err := os.WriteFile(*out, []byte(src), 0o644); err != nil {
-		log.Fatalf("write: %v", err)
+	if writeErr := os.WriteFile(*outputPath, []byte(src), 0o644); writeErr != nil {
+		log.Fatalf("write: %v", writeErr)
 	}
 
-	fmt.Printf("assemblegen: wrote %s (%d bytes)\n", *out, len(src))
+	fmt.Printf("assemblegen: wrote %s (%d bytes)\n", *outputPath, len(src))
 }
 
 func dirFor(arg string) string {
