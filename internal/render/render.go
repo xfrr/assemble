@@ -34,8 +34,8 @@ const (
 	appendStartFor   = "  regs = append(regs, assemble.OnStartFor[%s](%s%s))\n"
 	appendStopFor    = "  regs = append(regs, assemble.OnStopFor[%s](%s%s))\n"
 
-	assembleStartCall = "func Assemble() (*assemble.Container, error) {\n"
-	assembleEndBody   = "" +
+	assembleStartCallFmt = "func Assemble%s() (*assemble.Container, error) {\n"
+	assembleEndBody      = "" +
 		"  c, err := assemble.Assemble(assemble.Module(regs))\n" +
 		"  if err != nil { return nil, err }\n" +
 		"  return c, nil\n" +
@@ -90,7 +90,7 @@ func writeImports(b *bytes.Buffer, parsed []parser.Import, includeTime bool) {
 
 func writeAssembleStart(b *bytes.Buffer, m parser.Model, varName, outFile string) {
 	fmt.Fprintf(b, genDirectiveFmt, varName, filepath.Base(outFile))
-	b.WriteString(assembleStartCall)
+	b.WriteString(fmt.Sprintf(assembleStartCallFmt, varName))
 	total := len(m.Provides) + len(m.Sets) + len(m.Binds) + len(m.Starts) + len(m.Stops)
 	fmt.Fprintf(b, makeRegsFmt, total)
 }

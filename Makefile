@@ -17,6 +17,10 @@ run-example:
 install:
 	go install ./cmd/assemble
 
+.PHONY: benchmark
+benchmark:
+	go test -v -bench=. ./...
+
 .PHONY: lint
 lint:
 	golangci-lint run ./...

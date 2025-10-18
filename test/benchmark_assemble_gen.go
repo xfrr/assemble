@@ -2,104 +2,75 @@
 package benchgen
 
 import (
-	context "context"
+	"context"
+
 	assemble "github.com/xfrr/assemble"
 )
 
-//go:generate assemble -var NodeDependencyGraph -o ./benchmark_assemble_gen.go
-func Assemble() (*assemble.Container, error) {
+//go:generate assemble -var NodeDependencyGraph -o benchmark_assemble_gen.go
+func AssembleNodeDependencyGraph() (*assemble.Container, error) {
 	regs := make([]assemble.Registrar, 0, 10)
-	regs = append(regs, assemble.Provide[*Node](func(ctx context.Context, r assemble.Resolver) (*Node, error) {
-		prov := func(_ context.Context, _ assemble.Resolver) (*Node, error) {
-			return &Node{Idx: 1}, nil
-		}
-		return prov(ctx, r)
+	regs = append(regs, assemble.Provide[*Node](func(_ context.Context, _ assemble.Resolver) (*Node, error) {
+		return &Node{Idx: 1}, nil
 	}))
-	regs = append(regs, assemble.Provide[*Node](func(ctx context.Context, r assemble.Resolver) (*Node, error) {
-		prov := func(_ context.Context, r assemble.Resolver) (*Node, error) {
-			prev, err := getNode(r, "node1")
-			if err != nil {
-				return nil, err
-			}
-			return &Node{Idx: 2, Prev: prev}, nil
+	regs = append(regs, assemble.Provide[*Node](func(_ context.Context, r assemble.Resolver) (*Node, error) {
+		prev, err := getNode(r, "node1")
+		if err != nil {
+			return nil, err
 		}
-		return prov(ctx, r)
+		return &Node{Idx: 2, Prev: prev}, nil
 	}))
-	regs = append(regs, assemble.Provide[*Node](func(ctx context.Context, r assemble.Resolver) (*Node, error) {
-		prov := func(_ context.Context, r assemble.Resolver) (*Node, error) {
-			prev, err := getNode(r, "node2")
-			if err != nil {
-				return nil, err
-			}
-			return &Node{Idx: 3, Prev: prev}, nil
+	regs = append(regs, assemble.Provide[*Node](func(_ context.Context, r assemble.Resolver) (*Node, error) {
+		prev, err := getNode(r, "node2")
+		if err != nil {
+			return nil, err
 		}
-		return prov(ctx, r)
+		return &Node{Idx: 3, Prev: prev}, nil
 	}))
-	regs = append(regs, assemble.Provide[*Node](func(ctx context.Context, r assemble.Resolver) (*Node, error) {
-		prov := func(_ context.Context, _ assemble.Resolver) (*Node, error) {
-			return &Node{Idx: 4}, nil
-		}
-		return prov(ctx, r)
+	regs = append(regs, assemble.Provide[*Node](func(_ context.Context, _ assemble.Resolver) (*Node, error) {
+		return &Node{Idx: 4}, nil
 	}))
-	regs = append(regs, assemble.Provide[*Node](func(ctx context.Context, r assemble.Resolver) (*Node, error) {
-		prov := func(_ context.Context, r assemble.Resolver) (*Node, error) {
-			prev, err := getNode(r, "node4")
-			if err != nil {
-				return nil, err
-			}
-			return &Node{Idx: 5, Prev: prev}, nil
+	regs = append(regs, assemble.Provide[*Node](func(_ context.Context, r assemble.Resolver) (*Node, error) {
+		prev, err := getNode(r, "node4")
+		if err != nil {
+			return nil, err
 		}
-		return prov(ctx, r)
+		return &Node{Idx: 5, Prev: prev}, nil
 	}))
-	regs = append(regs, assemble.Provide[*Node](func(ctx context.Context, r assemble.Resolver) (*Node, error) {
-		prov := func(_ context.Context, r assemble.Resolver) (*Node, error) {
-			prev, err := getNode(r, "node5")
-			if err != nil {
-				return nil, err
-			}
-			return &Node{Idx: 6, Prev: prev}, nil
+	regs = append(regs, assemble.Provide[*Node](func(_ context.Context, r assemble.Resolver) (*Node, error) {
+		prev, err := getNode(r, "node5")
+		if err != nil {
+			return nil, err
 		}
-		return prov(ctx, r)
+		return &Node{Idx: 6, Prev: prev}, nil
 	}))
-	regs = append(regs, assemble.Provide[*Node](func(ctx context.Context, r assemble.Resolver) (*Node, error) {
-		prov := func(_ context.Context, r assemble.Resolver) (*Node, error) {
-			prev, err := getNode(r, "node3")
-			if err != nil {
-				return nil, err
-			}
-			return &Node{Idx: 7, Prev: prev}, nil
+	regs = append(regs, assemble.Provide[*Node](func(_ context.Context, r assemble.Resolver) (*Node, error) {
+		prev, err := getNode(r, "node3")
+		if err != nil {
+			return nil, err
 		}
-		return prov(ctx, r)
+		return &Node{Idx: 7, Prev: prev}, nil
 	}))
-	regs = append(regs, assemble.Provide[*Node](func(ctx context.Context, r assemble.Resolver) (*Node, error) {
-		prov := func(_ context.Context, r assemble.Resolver) (*Node, error) {
-			prev, err := getNode(r, "node2")
-			if err != nil {
-				return nil, err
-			}
-			return &Node{Idx: 8, Prev: prev}, nil
+	regs = append(regs, assemble.Provide[*Node](func(_ context.Context, r assemble.Resolver) (*Node, error) {
+		prev, err := getNode(r, "node2")
+		if err != nil {
+			return nil, err
 		}
-		return prov(ctx, r)
+		return &Node{Idx: 8, Prev: prev}, nil
 	}))
-	regs = append(regs, assemble.Provide[*Node](func(ctx context.Context, r assemble.Resolver) (*Node, error) {
-		prov := func(_ context.Context, r assemble.Resolver) (*Node, error) {
-			prev, err := getNode(r, "node6")
-			if err != nil {
-				return nil, err
-			}
-			return &Node{Idx: 9, Prev: prev}, nil
+	regs = append(regs, assemble.Provide[*Node](func(_ context.Context, r assemble.Resolver) (*Node, error) {
+		prev, err := getNode(r, "node6")
+		if err != nil {
+			return nil, err
 		}
-		return prov(ctx, r)
+		return &Node{Idx: 9, Prev: prev}, nil
 	}))
-	regs = append(regs, assemble.Provide[*Node](func(ctx context.Context, r assemble.Resolver) (*Node, error) {
-		prov := func(_ context.Context, r assemble.Resolver) (*Node, error) {
-			prev, err := getNode(r, "node9")
-			if err != nil {
-				return nil, err
-			}
-			return &Node{Idx: 10, Prev: prev}, nil
+	regs = append(regs, assemble.Provide[*Node](func(_ context.Context, r assemble.Resolver) (*Node, error) {
+		prev, err := getNode(r, "node9")
+		if err != nil {
+			return nil, err
 		}
-		return prov(ctx, r)
+		return &Node{Idx: 10, Prev: prev}, nil
 	}))
 	c, err := assemble.Assemble(assemble.Module(regs))
 	if err != nil {

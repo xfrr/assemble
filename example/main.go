@@ -12,7 +12,7 @@ func main() {
 	defer cancel()
 
 	// Build the container using the compiled Assemble function
-	container, err := Assemble()
+	container, err := AssembleCore()
 	if err != nil {
 		panic(err)
 	}

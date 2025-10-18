@@ -10,10 +10,6 @@ import (
 	benchgen "github.com/xfrr/assemble/test"
 )
 
-// ---------------------------
-// Models
-// ---------------------------
-
 type Node struct {
 	Idx  int
 	Prev *Node
@@ -143,7 +139,7 @@ func BenchmarkCompiled_BuildStartStop_VaryDepth(b *testing.B) {
 	for _, depth := range []int{10} {
 		b.Run(fmt.Sprintf("depth=%d", depth), func(b *testing.B) {
 			b.SetBytes(int64(depth)) // per-iteration "bytes" represent nodes constructed
-			benchBuildStartStop(b, benchgen.Assemble)
+			benchBuildStartStop(b, benchgen.AssembleNodeDependencyGraph)
 		})
 	}
 }
