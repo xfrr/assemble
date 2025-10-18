@@ -14,9 +14,13 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
+/* =========================
+   Constants
+   ========================= */
+
 const (
 	pkgAssemble     = "assemble"
-	typeModuleIdent = "Module"          // identifier when unqualified (same package)
+	typeModuleIdent = "Module"          // unqualified identifier (same package)
 	typeModuleQual  = "assemble.Module" // qualified type hint in errors
 
 	fnAssemble   = "Assemble"
@@ -39,13 +43,15 @@ const (
 
 	kindStart = "start"
 	kindStop  = "stop"
-)
 
-const (
 	provideFuncParamCount = 2 // (context.Context, assemble.Resolver)
 )
 
-// Lightweight reference to the argument of assemble.Assemble(...)
+/* =========================
+   Types
+   ========================= */
+
+// ModuleRef represents a reference to a module variable, either local or from another package.
 type ModuleRef struct {
 	IsLocalIdent bool
 	Ident        string
@@ -57,6 +63,10 @@ type ModuleRef struct {
 
 	Imports []Import // imports from the file that declared the function
 }
+
+/* =========================
+   Public API
+   ========================= */
 
 // ExtractModule scans the given package for a variable named `varName`
 // and attempts to parse its value as an assemble module definition.
@@ -101,21 +111,18 @@ func ExtractFromFunction(p *packages.Package, funcName string, fset *token.FileS
 			if !ok || fd.Name == nil || fd.Name.Name != funcName || fd.Body == nil {
 				return true
 			}
-			// Find: return assemble.Assemble(<expr>)
 			modRef := findAssembleReturnArg(p, fd.Body)
 			if modRef == nil {
 				firstErr = fmt.Errorf("function %q does not return assemble.Assemble(<module>)", funcName)
 				return false
 			}
 
-			// Resolve module expression to a Model (ident or selector).
 			m, err := extractModuleFromExpr(p, modRef, fset)
 			if err != nil {
 				firstErr = fmt.Errorf("extracting module from %q: %w", exprText(modRef), err)
 				return false
 			}
 
-			// Collect imports from the file that declared the function.
 			m.Imports = append(m.Imports, collectFileImports(p, f)...)
 
 			mdl = m
@@ -166,15 +173,11 @@ func ExtractFunctionModuleRefLoose(p *packages.Package, funcName string, fset *t
 					out.SelPkgAlias = base.Name
 					out.SelIdent = v.Sel.Name
 				}
-			default:
-				// unsupported expression form
 			}
 
-			// Resolve imports from this file (AST only).
 			fileImports := collectFileImportsNoTypes(f)
 			out.Imports = append(out.Imports, fileImports...)
 
-			// If selector, map alias -> import path.
 			if out.IsSelector && out.SelPkgPath == "" {
 				for _, im := range fileImports {
 					if im.Alias == out.SelPkgAlias {
@@ -198,6 +201,10 @@ func ExtractFunctionModuleRefLoose(p *packages.Package, funcName string, fset *t
 	return out, funcName, nil
 }
 
+/* =========================
+   AST search helpers
+   ========================= */
+
 // findAssembleReturnArgExprLoose finds `return assemble.Assemble(<expr>)` without types.
 func findAssembleReturnArgExprLoose(body *ast.BlockStmt) ast.Expr {
 	for _, st := range body.List {
@@ -206,57 +213,29 @@ func findAssembleReturnArgExprLoose(body *ast.BlockStmt) ast.Expr {
 			continue
 		}
 		for _, r := range ret.Results {
-			call, ok := r.(*ast.CallExpr)
-			if !ok {
+			call, callOk := r.(*ast.CallExpr)
+			if !callOk {
 				continue
 			}
-			// match assemble.Assemble(...) shape syntactically
-			switch fn := call.Fun.(type) {
-			case *ast.SelectorExpr:
-				// <pkg or ident>.Assemble
-				if id, ok := fn.X.(*ast.Ident); ok && fn.Sel != nil && fn.Sel.Name == "Assemble" && id.Name != "" {
-					if len(call.Args) >= 1 {
-						return call.Args[0]
-					}
+
+			fn, fnOk := call.Fun.(*ast.SelectorExpr)
+			if !fnOk {
+				continue
+			}
+
+			id, identOk := fn.X.(*ast.Ident)
+			if !identOk {
+				continue
+			}
+
+			if fn.Sel != nil && fn.Sel.Name == fnAssemble && id.Name != "" {
+				if len(call.Args) >= 1 {
+					return call.Args[0]
 				}
 			}
 		}
 	}
 	return nil
-}
-
-// collectFileImportsNoTypes collects imports from the given *ast.File without
-// relying on packages.Package.Imports or types. It uses explicit alias if present,
-// otherwise the last path segment as alias.
-func collectFileImportsNoTypes(f *ast.File) []Import {
-	seen := make(map[string]struct{})
-	var out []Import
-
-	for _, is := range f.Imports {
-		raw := is.Path.Value // quoted
-		pathStr, _ := strconv.Unquote(raw)
-		if pathStr == "" {
-			continue
-		}
-		// skip side-effect and dot imports (we won't emit them)
-		if is.Name != nil && (is.Name.Name == "_" || is.Name.Name == ".") {
-			continue
-		}
-
-		var alias string
-		if is.Name != nil {
-			alias = is.Name.Name
-		} else {
-			alias = path.Base(pathStr)
-		}
-
-		if _, dup := seen[pathStr]; dup {
-			continue
-		}
-		seen[pathStr] = struct{}{}
-		out = append(out, Import{Alias: alias, Path: pathStr})
-	}
-	return out
 }
 
 // findAssembleReturnArg searches for a `return assemble.Assemble(<expr>)` inside a block.
@@ -267,20 +246,18 @@ func findAssembleReturnArg(p *packages.Package, body *ast.BlockStmt) ast.Expr {
 			continue
 		}
 		for _, res := range ret.Results {
-			call, ok := res.(*ast.CallExpr)
-			if !ok {
+			call, callOk := res.(*ast.CallExpr)
+			if !callOk {
 				continue
 			}
 			fn, alias := funName(p, call.Fun)
 			if fn != fnAssemble {
 				continue
 			}
-			// Ensure it's assemble.Assemble (or Assemble from assemble pkg by alias)
+			// Require an explicit package/alias; avoid accepting bare "Assemble".
 			if alias == "" {
-				// Unqualified "Assemble" is too ambiguous; skip to be strict.
 				continue
 			}
-			// Accept first arg as the module reference.
 			if len(call.Args) >= 1 {
 				return call.Args[0]
 			}
@@ -335,7 +312,6 @@ func extractFromFile(p *packages.Package, f *ast.File, varName string, fset *tok
 				return false
 
 			case *ast.CallExpr:
-				// Handle: assemble.Module({...}) or Module({...})
 				if parseOk, m, err := parseModuleFromCall(p, v, fset); parseOk {
 					if err != nil {
 						perFileErr = err
@@ -352,7 +328,6 @@ func extractFromFile(p *packages.Package, f *ast.File, varName string, fset *tok
 					perFileErr = err
 					return false
 				}
-				// Merge imports from all files of the imported package.
 				impPkgPath := pkgPathOf(p, v)
 				if impPkg := p.Imports[impPkgPath]; impPkg != nil {
 					for _, impFile := range impPkg.Syntax {
@@ -379,19 +354,16 @@ func parseModuleComposite(p *packages.Package, cl *ast.CompositeLit, fset *token
 		return out, fmt.Errorf("module must be of type %s (got %s)", typeModuleQual, exprText(cl.Type))
 	}
 	for _, elt := range cl.Elts {
-		ce, ok := elt.(*ast.CallExpr)
-		if !ok {
-			continue
+		if ce, ok := elt.(*ast.CallExpr); ok {
+			parseTopCall(p, ce, &out, fset)
 		}
-		parseTopCall(p, ce, &out, fset)
 	}
 	return out, nil
 }
 
 // parseModuleFromCall handles constructs like:
 //
-//	assemble.Module({...})
-//	Module({...})
+//	assemble.Module({...}) or Module({...})
 func parseModuleFromCall(p *packages.Package, ce *ast.CallExpr, fset *token.FileSet) (bool, Model, error) {
 	var out Model
 
@@ -422,7 +394,6 @@ func parseModuleFromSelector(p *packages.Package, se *ast.SelectorExpr, fset *to
 		return out, fmt.Errorf("imported package %q not found", pkgPath)
 	}
 	if impPkg.Name != pkgAlias {
-		// If aliased, try to match imported package by alias+path pair.
 		var aliased *packages.Package
 		for _, ip := range p.Imports {
 			if ip.Name == pkgAlias && ip.PkgPath == pkgPath {
@@ -436,7 +407,6 @@ func parseModuleFromSelector(p *packages.Package, se *ast.SelectorExpr, fset *to
 		impPkg = aliased
 	}
 
-	// Recurse into the imported package to extract the module there.
 	m, err := ExtractModule(impPkg, se.Sel.Name, fset)
 	if err != nil {
 		return out, fmt.Errorf("extracting module from %q: %w", path.Join(pkgPath, se.Sel.Name), err)
@@ -485,7 +455,7 @@ func parseProvide(p *packages.Package, ce *ast.CallExpr, fset *token.FileSet) (P
 		pr.IsFuncLit = true
 		pr.RawFuncLit = printNode(fset, a)
 
-		// Count params/results from AST (works even if types.Info is missing).
+		// Arity from AST (works without type info).
 		if a.Type != nil && a.Type.Params != nil {
 			pr.LitParamCount = len(a.Type.Params.List)
 		}
@@ -494,9 +464,11 @@ func parseProvide(p *packages.Package, ce *ast.CallExpr, fset *token.FileSet) (P
 		}
 
 		// Prefer type info if available.
-		if typ, ok := p.TypesInfo.Types[a]; ok && typ.Type != nil {
-			if sig, sigOk := typ.Type.(*types.Signature); sigOk {
-				fillProvideFromSignature(p, &pr, sig)
+		if p != nil && p.TypesInfo != nil {
+			if typ, ok := p.TypesInfo.Types[a]; ok && typ.Type != nil {
+				if sig, sigOk := typ.Type.(*types.Signature); sigOk {
+					fillProvideFromSignature(p, &pr, sig)
+				}
 			}
 		}
 
@@ -512,11 +484,14 @@ func parseProvide(p *packages.Package, ce *ast.CallExpr, fset *token.FileSet) (P
 			}
 		}
 
-		// Detect (ctx, Resolver) arity by AST text if types not available.
-		if !pr.TakesResolve && pr.LitParamCount >= 1 && a.Type != nil && a.Type.Params != nil {
-			tyTxt := exprText(a.Type.Params.List[0].Type)
-			if strings.HasSuffix(tyTxt, ".Resolver") || strings.HasSuffix(tyTxt, ".Resolve") || tyTxt == "Resolver" || tyTxt == "Resolve" {
-				pr.TakesResolve = true
+		// Detect Resolver by inspecting first two params when types are missing.
+		if !pr.TakesResolve && a.Type != nil && a.Type.Params != nil {
+			for i := 0; i < len(a.Type.Params.List) && i < 2; i++ {
+				tyTxt := exprText(a.Type.Params.List[i].Type)
+				if strings.HasSuffix(tyTxt, ".Resolver") || strings.HasSuffix(tyTxt, ".Resolve") || tyTxt == "Resolver" || tyTxt == "Resolve" {
+					pr.TakesResolve = true
+					break
+				}
 			}
 		}
 
@@ -651,7 +626,6 @@ func collectFileImports(p *packages.Package, f *ast.File) []Import {
 		if pathStr == "" {
 			continue
 		}
-		// Skip side-effect (_) or dot (.) imports to avoid ambiguous rendering.
 		if imp.Name != nil && (imp.Name.Name == "_" || imp.Name.Name == ".") {
 			continue
 		}
@@ -663,6 +637,35 @@ func collectFileImports(p *packages.Package, f *ast.File) []Import {
 			alias = pkg.Name
 		} else {
 			alias = path.Base(pathStr)
+		}
+
+		if _, dup := seen[pathStr]; dup {
+			continue
+		}
+		seen[pathStr] = struct{}{}
+		out = append(out, Import{Alias: alias, Path: pathStr})
+	}
+	return out
+}
+
+// collectFileImportsNoTypes collects imports from *ast.File without types.
+// Uses explicit alias if present; otherwise the last path segment.
+func collectFileImportsNoTypes(f *ast.File) []Import {
+	seen := make(map[string]struct{})
+	var out []Import
+
+	for _, is := range f.Imports {
+		pathStr, _ := strconv.Unquote(is.Path.Value)
+		if pathStr == "" {
+			continue
+		}
+		if is.Name != nil && (is.Name.Name == "_" || is.Name.Name == ".") {
+			continue
+		}
+
+		alias := path.Base(pathStr)
+		if is.Name != nil {
+			alias = is.Name.Name
 		}
 
 		if _, dup := seen[pathStr]; dup {
@@ -725,20 +728,35 @@ func extractNameOption(p *packages.Package, args []ast.Expr) string {
    Hook helpers
    ========================= */
 
-func hookCallee(p *packages.Package, arg ast.Expr, fset *token.FileSet) (isFuncLit bool, raw, fn, alias, pkgPath string) {
+func hookCallee(
+	p *packages.Package,
+	arg ast.Expr,
+	fset *token.FileSet,
+) (bool, string, string, string, string) {
 	switch a := arg.(type) {
 	case *ast.FuncLit:
 		return true, printNode(fset, a), "", "", ""
 	default:
-		fn, alias = funName(p, a)
-		pkgPath = pkgPathOf(p, a)
+		fn, alias := funName(p, a)
+		pkgPath := pkgPathOf(p, a)
 		return false, "", fn, alias, pkgPath
 	}
 }
 
 // parseHookOptions parses priority and timeout options for start/stop hooks.
 // If captureExpr is true, TimeoutExpr preserves the original duration expression.
-func parseHookOptions(p *packages.Package, args []ast.Expr, kind string, captureExpr bool) (priority int, timeoutExpr string, timeoutMs int64) {
+func parseHookOptions(
+	p *packages.Package,
+	args []ast.Expr,
+	kind string,
+	captureExpr bool,
+) (int, string, int64) {
+	var (
+		priority    int
+		timeoutExpr string
+		timeoutMs   int64
+	)
+
 	timeoutFn := fnWithStartTimeout
 	if kind == kindStop {
 		timeoutFn = fnWithStopTimeout
@@ -803,6 +821,9 @@ func parseForSignatureFlags(p *packages.Package, expr ast.Expr) (bool, bool) {
    ========================= */
 
 func objectOf(p *packages.Package, e ast.Expr) types.Object {
+	if p == nil || p.TypesInfo == nil {
+		return nil
+	}
 	switch v := e.(type) {
 	case *ast.Ident:
 		return p.TypesInfo.ObjectOf(v)
@@ -832,7 +853,7 @@ func exprText(e ast.Expr) string { return types.ExprString(e) }
 func pkgPathOf(p *packages.Package, e ast.Expr) string {
 	switch v := e.(type) {
 	case *ast.SelectorExpr:
-		if id, ok := v.X.(*ast.Ident); ok {
+		if id, ok := v.X.(*ast.Ident); ok && p != nil && p.TypesInfo != nil {
 			if obj, objOk := p.TypesInfo.ObjectOf(id).(*types.PkgName); objOk && obj.Imported() != nil {
 				return obj.Imported().Path()
 			}
@@ -847,7 +868,7 @@ func pkgPathOf(p *packages.Package, e ast.Expr) string {
 	return ""
 }
 
-func funName(p *packages.Package, expr ast.Expr) (string, string) {
+func funName(_ *packages.Package, expr ast.Expr) (string, string) {
 	switch v := expr.(type) {
 	case *ast.Ident:
 		return v.Name, ""
@@ -857,9 +878,9 @@ func funName(p *packages.Package, expr ast.Expr) (string, string) {
 		}
 		return v.Sel.Name, exprText(v.X)
 	case *ast.IndexExpr:
-		return funName(p, v.X)
+		return funName(nil, v.X)
 	case *ast.IndexListExpr:
-		return funName(p, v.X)
+		return funName(nil, v.X)
 	default:
 		return types.ExprString(expr), ""
 	}
@@ -908,7 +929,14 @@ func millisFromExpr(e ast.Expr) int64 {
 	case *ast.SelectorExpr:
 		return millisFromSelector(a)
 	case *ast.BinaryExpr:
-		return millisFromBinaryExpr(a)
+		if a.Op == token.MUL {
+			return millisFromBinaryExpr(a)
+		}
+		// Support reversed order: time.Second * 2
+		if a.Op == token.MUL {
+			return millisFromBinaryExpr(a)
+		}
+		return 0
 	default:
 		return 0
 	}
@@ -924,18 +952,22 @@ func millisFromBasicLit(a *ast.BasicLit) int64 {
 
 func millisFromSelector(sel *ast.SelectorExpr) int64 {
 	const (
-		secondMillis = 1000
-		minuteMillis = 60 * secondMillis
+		millisecond = 1
+		second      = 1000 * millisecond
+		minute      = 60 * second
+		hour        = 60 * minute
 	)
 
 	t := exprText(sel)
 	switch {
 	case strings.HasSuffix(t, "Millisecond"):
-		return 1
+		return millisecond
 	case strings.HasSuffix(t, "Second"):
-		return secondMillis
+		return second
 	case strings.HasSuffix(t, "Minute"):
-		return minuteMillis
+		return minute
+	case strings.HasSuffix(t, "Hour"):
+		return hour
 	default:
 		return 0
 	}
@@ -943,28 +975,51 @@ func millisFromSelector(sel *ast.SelectorExpr) int64 {
 
 func millisFromBinaryExpr(a *ast.BinaryExpr) int64 {
 	const (
-		secondMillis = 1000
-		minuteMillis = 60 * secondMillis
+		millisecond = 1
+		second      = 1000 * millisecond
+		minute      = 60 * second
+		hour        = 60 * minute
 	)
-	if a.Op != token.MUL {
+
+	// support both "N * time.Unit" and "time.Unit * N"
+	intLit := func(e ast.Expr) (int, bool) {
+		bl, ok := e.(*ast.BasicLit)
+		if !ok || bl.Kind != token.INT {
+			return 0, false
+		}
+		n, err := strconv.Atoi(bl.Value)
+		if err != nil {
+			return 0, false
+		}
+		return n, true
+	}
+
+	unitMillis := func(e ast.Expr) int64 {
+		if sel, ok := e.(*ast.SelectorExpr); ok {
+			switch millisFromSelector(sel) {
+			case millisecond:
+				return millisecond
+			case second:
+				return second
+			case minute:
+				return minute
+			case hour:
+				return hour
+			}
+		}
 		return 0
 	}
-	left, ok := a.X.(*ast.BasicLit)
-	if !ok || left.Kind != token.INT {
-		return 0
+
+	// N * time.Unit
+	if n, ok := intLit(a.X); ok {
+		if ms := unitMillis(a.Y); ms > 0 {
+			return int64(n) * ms
+		}
 	}
-	n, err := strconv.Atoi(left.Value)
-	if err != nil {
-		return 0
-	}
-	if sel, selOk := a.Y.(*ast.SelectorExpr); selOk {
-		switch millisFromSelector(sel) {
-		case 1:
-			return int64(n)
-		case secondMillis:
-			return int64(n) * secondMillis
-		case minuteMillis:
-			return int64(n) * minuteMillis
+	// time.Unit * N
+	if n, ok := intLit(a.Y); ok {
+		if ms := unitMillis(a.X); ms > 0 {
+			return int64(n) * ms
 		}
 	}
 	return 0
@@ -977,8 +1032,12 @@ func printNode(fset *token.FileSet, n ast.Node) string {
 }
 
 func isErrorType(t types.Type) bool {
-	n, ok := t.(*types.Named)
-	return ok && n.Obj().Name() == "error"
+	// Robust check: identical to built-in error type.
+	if t == nil {
+		return false
+	}
+	builtin := types.Universe.Lookup("error")
+	return builtin != nil && types.Identical(t, builtin.Type())
 }
 
 // isAllowedType accepts either `assemble.Module` or unqualified `Module` (same pkg).
