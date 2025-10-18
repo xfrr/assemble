@@ -9,7 +9,7 @@ import (
 	di "github.com/xfrr/assemble/example/di"
 )
 
-//go:generate assemble -var Core -o ./core_assemble_gen.go
+//go:generate assemble -var Core -o core_assemble_gen.go
 func Assemble() (*assemble.Container, error) {
 	regs := make([]assemble.Registrar, 0, 6)
 	regs = append(regs, assemble.Provide[di.SimpleLogger](func(_ context.Context, _ assemble.Resolver) (di.SimpleLogger, error) {

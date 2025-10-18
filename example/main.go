@@ -11,11 +11,18 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Build the container
-	container, err := assemble.Assemble(Core)
+	// Build the container using the compiled Assemble function
+	container, err := Assemble()
 	if err != nil {
 		panic(err)
 	}
+
+	// Alternatively, use the assemble.Assemble function with the Core variable
+	// to build the container dynamically
+	// container, err := assemble.Assemble(Core)
+	// if err != nil {
+	// 	panic(err)
+	// }
 
 	// Start the container
 	if startErr := container.Start(context.Background()); startErr != nil {

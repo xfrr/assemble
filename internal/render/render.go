@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"go/format"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -88,7 +89,7 @@ func writeImports(b *bytes.Buffer, parsed []parser.Import, includeTime bool) {
 }
 
 func writeAssembleStart(b *bytes.Buffer, m parser.Model, varName, outFile string) {
-	fmt.Fprintf(b, genDirectiveFmt, varName, outFile)
+	fmt.Fprintf(b, genDirectiveFmt, varName, filepath.Base(outFile))
 	b.WriteString(assembleStartCall)
 	total := len(m.Provides) + len(m.Sets) + len(m.Binds) + len(m.Starts) + len(m.Stops)
 	fmt.Fprintf(b, makeRegsFmt, total)
