@@ -16,9 +16,10 @@ const (
 
 // Container is the runtime DI container built from Modules.
 type Container struct {
-	mu       sync.RWMutex
-	reg      *module
-	cache    map[Key]any
+	mu    sync.RWMutex
+	reg   *module
+	cache map[Key]any
+
 	started  bool
 	stopping bool
 
@@ -42,46 +43,23 @@ func Assemble(ms ...Module) (*Container, error) {
 
 // Start runs all OnStart/Invoke hooks with timeout & multi-error aggregation.
 func (c *Container) Start(ctx context.Context) error {
-	// Copy starts and release lock before executing user code to avoid deadlocks.
 	c.mu.Lock()
 	if c.started {
 		c.mu.Unlock()
 		return nil
 	}
-	starts := make([]startHook, len(c.reg.starts))
-	copy(starts, c.reg.starts)
+	starts := copyStartHooks(c.reg.starts)
 	c.mu.Unlock()
 
-	res := &resolver{c: c}
-
-	// Start ordering: priority ASC, then order ASC (registration/orderFn).
-	for i := range starts {
-		if starts[i].orderFn != nil {
-			starts[i].order = starts[i].orderFn(c)
-		} else {
-			starts[i].order = i
-		}
-	}
-	sort.Slice(starts, func(i, j int) bool {
-		if starts[i].priority == starts[j].priority {
-			return starts[i].order < starts[j].order
-		}
-		return starts[i].priority < starts[j].priority
-	})
+	assignOrders(starts, c)
+	sortStarts(starts)
 
 	var merr MultiError
-	for _, h := range starts {
-		to := h.timeout
-		if to <= 0 {
-			to = defaultStartTimeout
-		}
-		hctx, cancel := context.WithTimeout(ctx, to)
-		if err := h.fn(hctx, res); err != nil {
-			// Keep ErrInvokeFail for backwards-compat signal, but aggregate.
-			merr.Append(fmt.Errorf("%w: %s", ErrInvokeFail, err.Error()))
-		}
-		cancel()
-	}
+	runHooksWithTimeout(ctx, starts, defaultStartTimeout, func(err error) error {
+		// Keep ErrInvokeFail for backwards compatibility while aggregating.
+		return fmt.Errorf("%w: %s", ErrInvokeFail, err.Error())
+	}, &merr, c.newResolver())
+
 	if merr.Len() > 0 {
 		return &merr
 	}
@@ -92,6 +70,7 @@ func (c *Container) Start(ctx context.Context) error {
 	return nil
 }
 
+// Stop runs all OnStop hooks honoring priority and registration/creation order.
 func (c *Container) Stop(ctx context.Context) error {
 	c.mu.Lock()
 	if c.stopping {
@@ -99,41 +78,18 @@ func (c *Container) Stop(ctx context.Context) error {
 		return nil
 	}
 	c.stopping = true
-	// Copy stops and release lock before executing user code to avoid deadlocks.
-	stops := make([]stopHook, len(c.reg.stops))
-	copy(stops, c.reg.stops)
+	stops := copyStopHooks(c.reg.stops)
 	c.mu.Unlock()
 
-	res := &resolver{c: c}
-
-	// Compute order for each hook (higher = stop later). Default registration index.
-	for i := range stops {
-		if stops[i].orderFn != nil {
-			stops[i].order = stops[i].orderFn(c)
-		} else {
-			stops[i].order = i
-		}
-	}
-	// Stop ordering: priority DESC, then order DESC (reverse creation/registration).
-	sort.Slice(stops, func(i, j int) bool {
-		if stops[i].priority == stops[j].priority {
-			return stops[i].order > stops[j].order
-		}
-		return stops[i].priority > stops[j].priority
-	})
+	assignOrders(stops, c)
+	sortStops(stops)
 
 	var merr MultiError
-	for _, h := range stops {
-		to := h.timeout
-		if to <= 0 {
-			to = defaultStopTimeout
-		}
-		hctx, cancel := context.WithTimeout(ctx, to)
-		if err := h.fn(hctx, res); err != nil {
-			merr.Append(err)
-		}
-		cancel()
-	}
+	runHooksWithTimeout(ctx, stops, defaultStopTimeout, func(err error) error {
+		// For Stop we keep the original errors (no wrapping).
+		return err
+	}, &merr, c.newResolver())
+
 	if merr.Len() > 0 {
 		return &merr
 	}
@@ -154,43 +110,23 @@ func (c *Container) Shutdown(ctx context.Context) error {
 // rawGet is the internal, non-generic resolver used by di.Get[T].
 func (c *Container) rawGet(ctx context.Context, k Key) (any, error) {
 	// fast path: cached
-	c.mu.RLock()
-	if v, ok := c.cache[k]; ok {
-		c.mu.RUnlock()
-		return v, nil
-	}
-	c.mu.RUnlock()
-
-	// try direct providers
-	v, err := c.resolveDirect(ctx, k)
-	if err == nil {
-		c.mu.Lock()
-		// cache & record creation order the first time a key is produced
-		if _, exists := c.cache[k]; !exists {
-			c.cache[k] = v
-			c.creationIndex[k] = c.createSeq
-			c.createSeq++
-		}
-		c.mu.Unlock()
+	if v, ok := c.lookupCache(k); ok {
 		return v, nil
 	}
 
-	// if err is not NotFoundError, return it
-	if !isNotFound(err) {
+	// direct providers
+	if v, err := c.resolveDirect(ctx, k); err == nil {
+		c.cacheIfAbsent(k, v)
+		return v, nil
+	} else if !isNotFound(err) {
 		return nil, err
 	}
 
-	// try interface bindings
+	// interface bindings
 	if k.sliceElem == nil && k.typ.Kind() == reflect.Interface {
-		v, err = c.resolveViaBind(ctx, k)
+		v, err := c.resolveViaBind(ctx, k)
 		if err == nil {
-			c.mu.Lock()
-			if _, exists := c.cache[k]; !exists {
-				c.cache[k] = v
-				c.creationIndex[k] = c.createSeq
-				c.createSeq++
-			}
-			c.mu.Unlock()
+			c.cacheIfAbsent(k, v)
 			return v, nil
 		}
 		return nil, err
@@ -205,9 +141,10 @@ func (c *Container) resolveDirect(ctx context.Context, k Key) (any, error) {
 		return nil, NotFoundError{Type: k.typ, Name: k.name}
 	}
 
+	res := c.newResolver()
+
 	// sets: execute all providers and aggregate
 	if k.sliceElem != nil {
-		res := &resolver{c: c}
 		slice := reflect.MakeSlice(k.typ, 0, len(fns))
 		for _, fn := range fns {
 			val, err := fn(ctx, res)
@@ -216,6 +153,7 @@ func (c *Container) resolveDirect(ctx context.Context, k Key) (any, error) {
 			}
 			elem := reflect.ValueOf(val)
 			if !elem.IsValid() || !elem.Type().AssignableTo(k.sliceElem) {
+				// When invalid, elem.Type() is zero; protect against panic by checking IsValid above.
 				return nil, BadCastError{Key: k, From: elem.Type(), To: k.sliceElem}
 			}
 			slice = reflect.Append(slice, elem)
@@ -224,9 +162,7 @@ func (c *Container) resolveDirect(ctx context.Context, k Key) (any, error) {
 	}
 
 	// non-set: last registered wins (allow overrides in tests)
-	fn := fns[len(fns)-1]
-	res := &resolver{c: c}
-	val, err := fn(ctx, res)
+	val, err := fns[len(fns)-1](ctx, res)
 	if err != nil {
 		return nil, err
 	}
@@ -235,20 +171,19 @@ func (c *Container) resolveDirect(ctx context.Context, k Key) (any, error) {
 
 // resolveViaBind tries to find a concrete type for interface lookups.
 func (c *Container) resolveViaBind(ctx context.Context, k Key) (any, error) {
-	// scan providers to find a concrete type implementing k.typ
 	for pk := range c.reg.providers {
 		if pk.sliceElem != nil {
-			continue // sets not candidates
+			continue // sets are not candidates for interface binding
 		}
 		if pk.typ == nil || pk.typ.Kind() == reflect.Interface {
 			continue
 		}
 		if pk.typ.Implements(k.typ) {
-			// resolve that concrete type and cast
 			v, err := c.rawGet(ctx, pk)
 			if err != nil {
 				return nil, err
 			}
+			// Double-check runtime implementation (defensive in case of mismatched types).
 			if !reflect.TypeOf(v).Implements(k.typ) {
 				return nil, BindError{
 					From: k.typ,
@@ -260,4 +195,129 @@ func (c *Container) resolveViaBind(ctx context.Context, k Key) (any, error) {
 		}
 	}
 	return nil, NotFoundError{Type: k.typ, Name: k.name}
+}
+
+/* =========================
+   Internal helpers
+   ========================= */
+
+func (c *Container) newResolver() *resolver { return &resolver{c: c} }
+
+func (c *Container) lookupCache(k Key) (any, bool) {
+	c.mu.RLock()
+	v, ok := c.cache[k]
+	c.mu.RUnlock()
+	return v, ok
+}
+
+func (c *Container) cacheIfAbsent(k Key, v any) {
+	c.mu.Lock()
+	if _, exists := c.cache[k]; !exists {
+		c.cache[k] = v
+		c.creationIndex[k] = c.createSeq
+		c.createSeq++
+	}
+	c.mu.Unlock()
+}
+
+type orderedHook interface {
+	setOrder(int)
+	getOrder() int
+	getPriority() int
+	getTimeout() time.Duration
+	run(context.Context, *resolver) error
+	deriveOrder(*Container, int) int
+}
+
+func assignOrders[T orderedHook](hooks []T, c *Container) {
+	for i := range hooks {
+		hooks[i].setOrder(hooks[i].deriveOrder(c, i))
+	}
+}
+
+func sortStarts[T orderedHook](hooks []T) {
+	sort.Slice(hooks, func(i, j int) bool {
+		if hooks[i].getPriority() == hooks[j].getPriority() {
+			return hooks[i].getOrder() < hooks[j].getOrder()
+		}
+		return hooks[i].getPriority() < hooks[j].getPriority()
+	})
+}
+
+func sortStops[T orderedHook](hooks []T) {
+	sort.Slice(hooks, func(i, j int) bool {
+		if hooks[i].getPriority() == hooks[j].getPriority() {
+			return hooks[i].getOrder() > hooks[j].getOrder()
+		}
+		return hooks[i].getPriority() > hooks[j].getPriority()
+	})
+}
+
+func runHooksWithTimeout[T orderedHook](
+	ctx context.Context,
+	hooks []T,
+	defaultTO time.Duration,
+	wrap func(error) error,
+	merr *MultiError,
+	res *resolver,
+) {
+	for _, h := range hooks {
+		to := h.getTimeout()
+		if to <= 0 {
+			to = defaultTO
+		}
+		hctx, cancel := context.WithTimeout(ctx, to)
+		if err := h.run(hctx, res); err != nil {
+			merr.Append(wrap(err))
+		}
+		cancel()
+	}
+}
+
+/* =========================
+   Adapters for start/stop hooks
+   ========================= */
+
+func copyStartHooks(src []startHook) []*startHook {
+	dst := make([]*startHook, len(src))
+	for i := range src {
+		dst[i] = &src[i]
+	}
+	return dst
+}
+
+func copyStopHooks(src []stopHook) []*stopHook {
+	dst := make([]*stopHook, len(src))
+	for i := range src {
+		dst[i] = &src[i]
+	}
+	return dst
+}
+
+func (h *startHook) setOrder(v int)            { h.order = v }
+func (h *startHook) getOrder() int             { return h.order }
+func (h *startHook) getPriority() int          { return h.priority }
+func (h *startHook) getTimeout() time.Duration { return h.timeout }
+func (h *startHook) run(ctx context.Context, r *resolver) error {
+	return h.fn(ctx, r)
+}
+func (h *startHook) deriveOrder(c *Container, idx int) int {
+	if h.orderFn != nil {
+		return h.orderFn(c)
+	}
+	return idx
+}
+
+func (h *stopHook) setOrder(v int)            { h.order = v }
+func (h *stopHook) getOrder() int             { return h.order }
+func (h *stopHook) getPriority() int          { return h.priority }
+func (h *stopHook) getTimeout() time.Duration { return h.timeout }
+func (h *stopHook) run(ctx context.Context, r *resolver) error {
+	return h.fn(ctx, r)
+}
+func (h *stopHook) deriveOrder(c *Container, idx int) int {
+	if h.orderFn != nil {
+		return h.orderFn(c)
+	}
+	return idx
 }
